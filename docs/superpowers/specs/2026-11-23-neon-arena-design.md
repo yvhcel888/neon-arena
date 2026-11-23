@@ -562,13 +562,15 @@ IDLE ──join──▶ LOBBY(1人) ──join──▶ LOBBY(≥2人, countdow
 动作语法：
 
 ```json
-{"type": "move",  "dir": "n|e|s|w"}
-{"type": "dash",  "dir": "n|e|s|w"}
-{"type": "attack","dir": "n|e|s|w"}
-{"type": "gather"}
-{"type": "shield"}
-{"type": "heal"}
-{"type": "wait"}
+[
+  {"type": "move", "dir": "n|e|s|w"},
+  {"type": "dash", "dir": "n|e|s|w"},
+  {"type": "attack", "dir": "n|e|s|w"},
+  {"type": "gather"},
+  {"type": "shield"},
+  {"type": "heal"},
+  {"type": "wait"}
+]
 ```
 
 ### 5.7 结算事件
