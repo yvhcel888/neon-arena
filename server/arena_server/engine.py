@@ -155,6 +155,8 @@ class Engine:
 
         self.turn = 1
         self.finished = False
+        self.end_reason: str | None = None
+        self.completed_turns = 0
         self.last_events: list[dict] = []
         self.events_turn = 0
 
@@ -260,7 +262,7 @@ class Engine:
         if action_type == "gather":
             node = self._node_at(player.pos)
             if node is None or not node.active:
-                raise ActionError("invalid_action", "no active node here")
+                raise ActionError("no_active_node", "no active node here")
             return {"type": "gather"}
 
         if action_type == "shield":
@@ -270,7 +272,7 @@ class Engine:
                     f"shield needs {self.rules.shield_cost} energy",
                 )
             if player.shield >= self.rules.max_shield:
-                raise ActionError("invalid_action", "shield is already full")
+                raise ActionError("shield_full", "shield is already full")
             return {"type": "shield"}
 
         if action_type == "heal":
@@ -280,7 +282,7 @@ class Engine:
                     f"heal needs {self.rules.heal_cost} energy",
                 )
             if player.hp >= self.rules.max_hp:
-                raise ActionError("invalid_action", "hp is already full")
+                raise ActionError("full_hp", "hp is already full")
             return {"type": "heal"}
 
         if action_type == "wait":
@@ -289,6 +291,8 @@ class Engine:
         raise ActionError("invalid_action", f"unknown action type {action_type!r}")
 
     def resolve(self, actions: dict[str, dict]) -> list[dict]:
+        if self.finished:
+            return []
         actions = actions or {}
         current_turn = self.turn
         alive = [p for p in self.players.values() if p.alive]
@@ -382,7 +386,89 @@ class Engine:
                 "to": _as_coord(player.pos),
             })
 
-        for player in self.players.values():
+        for player in alive:
+            action = chosen[player.id]
+            action_type = action["type"]
+            if action_type == "shield":
+                amount = min(self.rules.shield_amount,
+                             self.rules.max_shield - player.shield)
+                if amount > 0:
+                    player.shield += amount
+                    events.append({
+                        "type": "shield", "player": player.id,
+                        "amount": amount, "shield": player.shield,
+                    })
+            elif action_type == "heal":
+                amount = min(self.rules.heal_amount,
+                             self.rules.max_hp - player.hp)
+                if amount > 0:
+                    player.hp += amount
+                    events.append({
+                        "type": "heal", "player": player.id,
+                        "amount": amount, "hp": player.hp,
+                    })
+            elif action_type == "gather":
+                node = self._node_at(player.pos)
+                if node is not None and node.active:
+                    node.cooldown = self.rules.node_cooldown
+                    player.energy = min(
+                        self.rules.max_energy,
+                        player.energy + self.rules.gather_energy,
+                    )
+                    player.score += self.rules.gather_score
+                    player.gathered += 1
+                    events.append({
+                        "type": "gather", "player": player.id,
+                        "pos": _as_coord(player.pos),
+                        "energy_gain": self.rules.gather_energy,
+                        "score_gain": self.rules.gather_score,
+                    })
+
+        occupants = {player.pos: player for player in alive}
+        damage_by_target: dict[str, dict[str, int]] = {}
+        for player in alive:
+            action = chosen[player.id]
+            if action["type"] != "attack":
+                continue
+            dx, dy = DIRS[action["dir"]]
+            target_pos = (player.pos[0] + dx, player.pos[1] + dy)
+            target = occupants.get(target_pos)
+            events.append({
+                "type": "attack", "player": player.id,
+                "dir": action["dir"],
+                "target": _as_coord(target_pos) if target is not None else None,
+            })
+            if target is None:
+                continue
+            shield_damage = min(target.shield, self.rules.attack_damage)
+            hp_damage = self.rules.attack_damage - shield_damage
+            target.shield -= shield_damage
+            target.hp -= hp_damage
+            if hp_damage > 0:
+                player.damage_dealt += hp_damage
+                player.score += hp_damage * self.rules.damage_score
+                attackers = damage_by_target.setdefault(target.id, {})
+                attackers[player.id] = attackers.get(player.id, 0) + hp_damage
+            events.append({
+                "type": "damage", "player": player.id, "target": target.id,
+                "hp_damage": hp_damage, "shield_damage": shield_damage,
+            })
+
+        for player in alive:
+            if player.hp > 0:
+                continue
+            player.alive = False
+            attackers = damage_by_target.get(player.id, {})
+            killer = None
+            if attackers:
+                most_damage = max(attackers.values())
+                killer = min(player_id for player_id, damage in attackers.items()
+                             if damage == most_damage)
+                self.players[killer].kills += 1
+                self.players[killer].score += self.rules.kill_score
+            events.append({"type": "death", "player": player.id, "killer": killer})
+
+        for player in alive:
             if player.alive:
                 player.energy = min(
                     self.rules.max_energy,
@@ -392,35 +478,105 @@ class Engine:
             if node.cooldown > 0:
                 node.cooldown -= 1
 
+        for player in alive:
+            if (player.alive and not player.forfeited
+                    and player.missed_turns >= self.max_missed_turns):
+                player.alive = False
+                player.hp = 0
+                player.forfeited = True
+                events.append({"type": "forfeit", "player": player.id})
+
         self.last_events = events
         self.events_turn = current_turn
-        self.turn = current_turn + 1
+        self.completed_turns = current_turn
+        reason = self._end_reason()
+        if reason is not None:
+            self.finished = True
+            self.end_reason = reason
+        else:
+            self.turn = current_turn + 1
         return events
+
+    def _end_reason(self) -> str | None:
+        alive_count = sum(player.alive for player in self.players.values())
+        if alive_count == 0:
+            return "mutual_destruction"
+        if alive_count == 1:
+            return "last_standing"
+        if self.completed_turns >= self.turn_limit:
+            return "turn_limit"
+        return None
+
+    @staticmethod
+    def _player_payload(player: Player) -> dict:
+        return {
+            "id": player.id,
+            "name": player.name,
+            "kind": player.kind,
+            "pos": _as_coord(player.pos),
+            "hp": player.hp,
+            "shield": player.shield,
+            "energy": player.energy,
+            "score": player.score,
+            "alive": player.alive,
+            "stats": {
+                "damage_dealt": player.damage_dealt,
+                "kills": player.kills,
+                "gathered": player.gathered,
+                "forfeited": player.forfeited,
+            },
+        }
+
+    def standings(self) -> list[dict]:
+        players = sorted(
+            self.players.values(),
+            key=lambda player: (
+                not player.alive, -player.score, -player.hp,
+                -player.energy, player.id,
+            ),
+        )
+        return [self._player_payload(player) for player in players]
+
+    def end_payload(self, reason: str | None = None) -> dict:
+        reason = self.end_reason if reason is None else reason
+        standings = self.standings()
+        winner = None
+        if reason != "aborted" and standings:
+            winner = {"id": standings[0]["id"], "name": standings[0]["name"]}
+        return {
+            "type": "end",
+            "match_id": self.match_id,
+            "reason": reason,
+            "turns": self.completed_turns,
+            "winner": winner,
+            "standings": standings,
+            "events_turn": self.events_turn,
+            "events": [dict(event) for event in self.last_events],
+        }
+
+    def forfeit(self, player_id: str) -> bool:
+        player = self.players.get(player_id)
+        if self.finished or player is None or not player.alive:
+            return False
+        player.alive = False
+        player.hp = 0
+        player.forfeited = True
+        self.last_events = [
+            *self.last_events, {"type": "forfeit", "player": player_id},
+        ]
+        self.events_turn = self.turn
+        reason = self._end_reason()
+        if reason is not None:
+            self.finished = True
+            self.end_reason = reason
+        return True
 
     def state_payload(self, for_player: str | None = None) -> dict:
         payload = {
             "turn": self.turn,
             "turn_limit": self.turn_limit,
-            "players": [
-                {
-                    "id": player.id,
-                    "name": player.name,
-                    "kind": player.kind,
-                    "pos": _as_coord(player.pos),
-                    "hp": player.hp,
-                    "shield": player.shield,
-                    "energy": player.energy,
-                    "score": player.score,
-                    "alive": player.alive,
-                    "stats": {
-                        "damage_dealt": player.damage_dealt,
-                        "kills": player.kills,
-                        "gathered": player.gathered,
-                        "forfeited": player.forfeited,
-                    },
-                }
-                for player in self.players.values()
-            ],
+            "players": [self._player_payload(player)
+                        for player in self.players.values()],
             "nodes": [
                 {
                     "pos": _as_coord(node.pos),
