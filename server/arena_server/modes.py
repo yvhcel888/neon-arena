@@ -22,7 +22,7 @@ def select_mode(requested: str, waiting_count: int, cursor: int) -> tuple[str, i
         index = (cursor + offset) % len(MODE_ORDER)
         name = MODE_ORDER[index]
         if waiting_count >= MODE_MIN_PLAYERS[name]:
-            return name, (cursor + 1) % len(MODE_ORDER)
+            return name, (index + 1) % len(MODE_ORDER)
     return "classic", (cursor + 1) % len(MODE_ORDER)
 
 
@@ -79,6 +79,9 @@ class KingMode(GameMode):
 
     def player_fields(self, player):
         return {"hill_streak": self.state["streaks"][player.id]}
+
+    def on_forfeit(self, player_id, events):
+        self.state["streaks"][player_id] = 0
 
     def after_missed(self, events):
         for player in self.engine.players.values():

@@ -42,6 +42,18 @@ class KingModeTests(unittest.TestCase):
         self.assertEqual(e.players["P1"].score, 5)
         self.assertEqual(e.mode_state["streaks"]["P1"], 0)
 
+    def test_forfeit_immediately_resets_hill_streak(self):
+        e = self.make()
+        e.resolve({"P1": {"type": "wait"}, "P2": {"type": "wait"}})
+        self.assertEqual(e.mode_state["streaks"]["P1"], 1)
+        self.assertTrue(e.forfeit("P1"))
+        current = next(p for p in e.state_payload()["players"]
+                       if p["id"] == "P1")
+        final = next(p for p in e.end_payload()["standings"]
+                     if p["id"] == "P1")
+        self.assertEqual(current["hill_streak"], 0)
+        self.assertEqual(final["hill_streak"], 0)
+
     def test_target_score_ends_match(self):
         e = self.make()
         e.players["P1"].score = 95
