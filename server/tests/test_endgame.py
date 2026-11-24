@@ -1,6 +1,6 @@
 import unittest
 from arena_server.config import Rules
-from arena_server.engine import Engine, MapData, NODE_POINTS
+from arena_server.engine import ActionError, Engine, MapData, NODE_POINTS
 
 class EndgameTests(unittest.TestCase):
     def make(self, limit=2):
@@ -111,6 +111,13 @@ class EndgameTests(unittest.TestCase):
 
 
 class EngineReviewRegressionTests(unittest.TestCase):
+    def make(self, limit=10):
+        e = Engine(Rules(turn_limit=limit),
+                   [("A", "agent"), ("B", "agent")],
+                   seed=3, map_data=MapData(15, 15, frozenset(), NODE_POINTS))
+        e.players["P1"].pos, e.players["P2"].pos = (5, 5), (9, 9)
+        return e
+
     def test_forfeit_after_resolved_turn_does_not_mix_events(self):
         e = Engine(Rules(), [("A", "agent"), ("B", "agent"),
                              ("C", "agent")],
@@ -133,6 +140,62 @@ class EngineReviewRegressionTests(unittest.TestCase):
         e.resolve({"P1": {"type": "wait"},
                    "P2": {"type": "not-an-action"}})
         self.assertEqual(e.players["P2"].missed_turns, 2)
+
+    def test_malformed_direction_is_treated_as_missed_turn(self):
+        for action_type in ("move", "dash", "attack"):
+            for direction in ([], {}, None):
+                with self.subTest(action_type=action_type, direction=direction):
+                    e = self.make(10)
+                    e.resolve({"P1": {"type": "wait"}})
+                    self.assertEqual(e.players["P2"].missed_turns, 1)
+                    player = e.players["P2"]
+                    start_pos = player.pos
+                    start_energy = player.energy
+
+                    events = e.resolve({
+                        "P1": {"type": "wait"},
+                        "P2": {"type": action_type, "dir": direction},
+                    })
+
+                    self.assertEqual(player.missed_turns, 2)
+                    self.assertEqual(player.pos, start_pos)
+                    self.assertEqual(player.energy,
+                                     start_energy + e.rules.energy_regen)
+                    self.assertFalse(any(event.get("player") == "P2"
+                                         for event in events))
+
+    def test_validate_action_rejects_malformed_direction(self):
+        e = self.make(10)
+        for action_type in ("move", "dash", "attack"):
+            for direction in ([], {}, None):
+                with self.subTest(action_type=action_type, direction=direction):
+                    with self.assertRaises(ActionError) as ctx:
+                        e.validate_action("P1",
+                                          {"type": action_type, "dir": direction},
+                                          e.turn)
+                    self.assertEqual(ctx.exception.code, "invalid_action")
+
+    def test_under_resourced_attack_after_missed_turn_is_wait(self):
+        e = self.make(10)
+        e.players["P1"].pos, e.players["P2"].pos = (5, 5), (6, 5)
+        e.resolve({"P1": {"type": "wait"}})
+        self.assertEqual(e.players["P2"].missed_turns, 1)
+        player = e.players["P2"]
+        player.energy = e.rules.attack_cost - 1
+        start_energy = player.energy
+        attacker_hp = e.players["P1"].hp
+
+        events = e.resolve({
+            "P1": {"type": "wait"},
+            "P2": {"type": "attack", "dir": "w"},
+        })
+
+        self.assertEqual(player.missed_turns, 2)
+        self.assertEqual(player.energy, start_energy + e.rules.energy_regen)
+        self.assertFalse(any(event.get("player") == "P2"
+                             for event in events))
+        self.assertFalse(any(event["type"] == "damage" for event in events))
+        self.assertEqual(e.players["P1"].hp, attacker_hp)
 
 
 if __name__ == "__main__":

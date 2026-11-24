@@ -125,6 +125,12 @@ class Engine:
                  match_id: str = "local", map_data: MapData | None = None,
                  max_missed_turns: int = 4):
         self.rules = rules
+        self._action_costs = {
+            "dash": rules.dash_cost,
+            "attack": rules.attack_cost,
+            "heal": rules.heal_cost,
+            "shield": rules.shield_cost,
+        }
         self.seed = seed
         self.match_id = match_id
         self.max_missed_turns = max_missed_turns
@@ -199,7 +205,7 @@ class Engine:
         action_type = action.get("type")
         if action_type in MOVE_TYPES or action_type == "attack":
             direction = action.get("dir")
-            if direction not in DIRS:
+            if not isinstance(direction, str) or direction not in DIRS:
                 return None
             return {"type": action_type, "dir": direction}
         if action_type in ("gather", "shield", "heal", "wait"):
@@ -223,7 +229,7 @@ class Engine:
         action_type = action.get("type")
         if action_type == "move":
             direction = action.get("dir")
-            if direction not in DIRS:
+            if not isinstance(direction, str) or direction not in DIRS:
                 raise ActionError("invalid_action", f"invalid direction {direction!r}")
             dx, dy = DIRS[direction]
             target = (player.pos[0] + dx, player.pos[1] + dy)
@@ -233,7 +239,7 @@ class Engine:
 
         if action_type == "dash":
             direction = action.get("dir")
-            if direction not in DIRS:
+            if not isinstance(direction, str) or direction not in DIRS:
                 raise ActionError("invalid_action", f"invalid direction {direction!r}")
             dx, dy = DIRS[direction]
             middle = (player.pos[0] + dx, player.pos[1] + dy)
@@ -241,21 +247,21 @@ class Engine:
             target = (player.pos[0] + dx * distance, player.pos[1] + dy * distance)
             if not self._walkable(middle) or not self._walkable(target):
                 raise ActionError("wall", f"cannot dash into {_as_coord(target)}")
-            if player.energy < self.rules.dash_cost:
+            if player.energy < self._action_costs["dash"]:
                 raise ActionError(
                     "insufficient_energy",
-                    f"dash needs {self.rules.dash_cost} energy",
+                    f"dash needs {self._action_costs['dash']} energy",
                 )
             return {"type": "dash", "dir": direction}
 
         if action_type == "attack":
             direction = action.get("dir")
-            if direction not in DIRS:
+            if not isinstance(direction, str) or direction not in DIRS:
                 raise ActionError("invalid_action", f"invalid direction {direction!r}")
-            if player.energy < self.rules.attack_cost:
+            if player.energy < self._action_costs["attack"]:
                 raise ActionError(
                     "insufficient_energy",
-                    f"attack needs {self.rules.attack_cost} energy",
+                    f"attack needs {self._action_costs['attack']} energy",
                 )
             return {"type": "attack", "dir": direction}
 
@@ -266,20 +272,20 @@ class Engine:
             return {"type": "gather"}
 
         if action_type == "shield":
-            if player.energy < self.rules.shield_cost:
+            if player.energy < self._action_costs["shield"]:
                 raise ActionError(
                     "insufficient_energy",
-                    f"shield needs {self.rules.shield_cost} energy",
+                    f"shield needs {self._action_costs['shield']} energy",
                 )
             if player.shield >= self.rules.max_shield:
                 raise ActionError("shield_full", "shield is already full")
             return {"type": "shield"}
 
         if action_type == "heal":
-            if player.energy < self.rules.heal_cost:
+            if player.energy < self._action_costs["heal"]:
                 raise ActionError(
                     "insufficient_energy",
-                    f"heal needs {self.rules.heal_cost} energy",
+                    f"heal needs {self._action_costs['heal']} energy",
                 )
             if player.hp >= self.rules.max_hp:
                 raise ActionError("full_hp", "hp is already full")
@@ -303,12 +309,7 @@ class Engine:
             canonical = self._canonical_action(actions.get(player.id))
             valid = canonical is not None
             if valid and canonical["type"] in COST_ACTIONS:
-                cost = {
-                    "dash": self.rules.dash_cost,
-                    "attack": self.rules.attack_cost,
-                    "heal": self.rules.heal_cost,
-                    "shield": self.rules.shield_cost,
-                }[canonical["type"]]
+                cost = self._action_costs[canonical["type"]]
                 valid = player.energy >= cost
             if valid:
                 player.missed_turns = 0
@@ -317,17 +318,11 @@ class Engine:
                 player.missed_turns += 1
                 chosen[player.id] = {"type": "wait"}
 
-        costs = {
-            "dash": self.rules.dash_cost,
-            "attack": self.rules.attack_cost,
-            "heal": self.rules.heal_cost,
-            "shield": self.rules.shield_cost,
-        }
         for player in alive:
             action = chosen[player.id]
             if action["type"] not in COST_ACTIONS:
                 continue
-            cost = costs[action["type"]]
+            cost = self._action_costs[action["type"]]
             if player.energy < cost:
                 chosen[player.id] = {"type": "wait"}
                 continue
