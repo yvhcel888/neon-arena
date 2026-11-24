@@ -179,7 +179,7 @@ class ModeFrameworkTests(unittest.TestCase):
         self.assertNotIn("hill_streak", e.state_payload()["players"][0])
 
     def test_rotation_skips_team_when_only_two_players(self):
-        self.assertEqual(select_mode("rotation", 2, 2), ("survival", 3))
+        self.assertEqual(select_mode("rotation", 2, 2), ("survival", 4))
         self.assertEqual(select_mode("rotation", 4, 2), ("team", 3))
         self.assertEqual(select_mode("king", 2, 4), ("king", 4))
 
@@ -721,7 +721,7 @@ class RotationSelectionTests(unittest.TestCase):
     def test_two_players_skip_team(self):
         self.assertEqual(select_mode("rotation", 2, 0), ("classic", 1))
         self.assertEqual(select_mode("rotation", 2, 1), ("king", 2))
-        self.assertEqual(select_mode("rotation", 2, 2), ("survival", 3))
+        self.assertEqual(select_mode("rotation", 2, 2), ("survival", 4))
 
     def test_four_players_allow_team(self):
         self.assertEqual(select_mode("rotation", 4, 2), ("team", 3))
