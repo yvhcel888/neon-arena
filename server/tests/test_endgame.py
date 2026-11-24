@@ -110,5 +110,30 @@ class EndgameTests(unittest.TestCase):
         self.assertEqual(payload["turns"], 0)
 
 
+class EngineReviewRegressionTests(unittest.TestCase):
+    def test_forfeit_after_resolved_turn_does_not_mix_events(self):
+        e = Engine(Rules(), [("A", "agent"), ("B", "agent"),
+                             ("C", "agent")],
+                   seed=4, map_data=MapData(15, 15, frozenset(), NODE_POINTS))
+        e.players["P1"].energy = 100
+        e.resolve({"P1": {"type": "attack", "dir": "e"},
+                   "P2": {"type": "wait"}, "P3": {"type": "wait"}})
+        self.assertTrue(e.last_events)
+        self.assertTrue(e.forfeit("P3"))
+        self.assertFalse(e.finished)
+        self.assertEqual(e.last_events,
+                         [{"type": "forfeit", "player": "P3"}])
+        self.assertEqual(e.events_turn, 2)
+
+    def test_invalid_action_does_not_reset_missed_turns(self):
+        e = Engine(Rules(), [("A", "agent"), ("B", "agent")],
+                   seed=4, map_data=MapData(15, 15, frozenset(), NODE_POINTS))
+        e.resolve({"P1": {"type": "wait"}})
+        self.assertEqual(e.players["P2"].missed_turns, 1)
+        e.resolve({"P1": {"type": "wait"},
+                   "P2": {"type": "not-an-action"}})
+        self.assertEqual(e.players["P2"].missed_turns, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

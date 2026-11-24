@@ -300,10 +300,19 @@ class Engine:
 
         chosen: dict[str, dict] = {}
         for player in alive:
-            if player.id in actions:
+            canonical = self._canonical_action(actions.get(player.id))
+            valid = canonical is not None
+            if valid and canonical["type"] in COST_ACTIONS:
+                cost = {
+                    "dash": self.rules.dash_cost,
+                    "attack": self.rules.attack_cost,
+                    "heal": self.rules.heal_cost,
+                    "shield": self.rules.shield_cost,
+                }[canonical["type"]]
+                valid = player.energy >= cost
+            if valid:
                 player.missed_turns = 0
-                canonical = self._canonical_action(actions[player.id])
-                chosen[player.id] = canonical or {"type": "wait"}
+                chosen[player.id] = canonical
             else:
                 player.missed_turns += 1
                 chosen[player.id] = {"type": "wait"}
@@ -561,9 +570,7 @@ class Engine:
         player.alive = False
         player.hp = 0
         player.forfeited = True
-        self.last_events = [
-            *self.last_events, {"type": "forfeit", "player": player_id},
-        ]
+        self.last_events = [{"type": "forfeit", "player": player_id}]
         self.events_turn = self.turn
         reason = self._end_reason()
         if reason is not None:
