@@ -3,6 +3,8 @@ from collections import deque
 from dataclasses import dataclass
 import random
 
+from arena_server.modes import create_game_mode
+
 WIDTH, HEIGHT = 15, 15
 SPAWN_POINTS = ((1, 1), (13, 13), (13, 1), (1, 13))
 NODE_POINTS = ((7, 7), (7, 3), (3, 7), (11, 7), (7, 11))
@@ -123,7 +125,7 @@ def _as_coord(pos: tuple[int, int]) -> list[int]:
 class Engine:
     def __init__(self, rules, players: list[tuple[str, str]], seed: int,
                  match_id: str = "local", map_data: MapData | None = None,
-                 max_missed_turns: int = 4):
+                 max_missed_turns: int = 4, mode: str = "classic"):
         self.rules = rules
         self._action_costs = {
             "dash": rules.dash_cost,
@@ -159,12 +161,19 @@ class Engine:
                 missed_turns=0,
             )
 
+        self.mode_name = mode
+        self.mode = create_game_mode(self, mode)
+
         self.turn = 1
         self.finished = False
         self.end_reason: str | None = None
         self.completed_turns = 0
         self.last_events: list[dict] = []
         self.events_turn = 0
+
+    @property
+    def mode_state(self) -> dict:
+        return self.mode.state
 
     def _spawn_points(self, count: int) -> list[tuple[int, int]]:
         rng = random.Random(self.seed)
@@ -450,7 +459,8 @@ class Engine:
             target.hp -= hp_damage
             if hp_damage > 0:
                 player.damage_dealt += hp_damage
-                player.score += hp_damage * self.rules.damage_score
+                player.score += (hp_damage * self.rules.damage_score
+                                 * self.mode.damage_multiplier(player, target))
                 attackers = damage_by_target.setdefault(target.id, {})
                 attackers[player.id] = attackers.get(player.id, 0) + hp_damage
             events.append({
@@ -469,8 +479,12 @@ class Engine:
                 killer = min(player_id for player_id, damage in attackers.items()
                              if damage == most_damage)
                 self.players[killer].kills += 1
-                self.players[killer].score += self.rules.kill_score
+                self.players[killer].score += self.mode.kill_reward(
+                    self.players[killer], player,
+                )
             events.append({"type": "death", "player": player.id, "killer": killer})
+
+        self.mode.after_deaths(events)
 
         for player in alive:
             if player.alive:
@@ -490,6 +504,7 @@ class Engine:
                 player.forfeited = True
                 events.append({"type": "forfeit", "player": player.id})
 
+        self.mode.after_missed(events)
         self.last_events = events
         self.events_turn = current_turn
         self.completed_turns = current_turn
@@ -502,18 +517,19 @@ class Engine:
         return events
 
     def _end_reason(self) -> str | None:
-        alive_count = sum(player.alive for player in self.players.values())
-        if alive_count == 0:
-            return "mutual_destruction"
+        alive_count = self.mode.alive_unit_count()
         if alive_count == 1:
             return "last_standing"
+        if alive_count == 0:
+            return "mutual_destruction"
+        if self.mode.score_limit_reached():
+            return "score_limit"
         if self.completed_turns >= self.turn_limit:
             return "turn_limit"
         return None
 
-    @staticmethod
-    def _player_payload(player: Player) -> dict:
-        return {
+    def _player_payload(self, player: Player) -> dict:
+        payload = {
             "id": player.id,
             "name": player.name,
             "kind": player.kind,
@@ -530,6 +546,8 @@ class Engine:
                 "forfeited": player.forfeited,
             },
         }
+        payload.update(self.mode.player_fields(player))
+        return payload
 
     def standings(self) -> list[dict]:
         players = sorted(
@@ -546,8 +564,8 @@ class Engine:
         standings = self.standings()
         winner = None
         if reason != "aborted" and standings:
-            winner = {"id": standings[0]["id"], "name": standings[0]["name"]}
-        return {
+            winner = self.mode.winner(standings)
+        payload = {
             "type": "end",
             "match_id": self.match_id,
             "reason": reason,
@@ -557,6 +575,10 @@ class Engine:
             "events_turn": self.events_turn,
             "events": [dict(event) for event in self.last_events],
         }
+        payload.update(self.mode.end_extras())
+        payload["mode"] = self.mode_name
+        payload["mode_state"] = self.mode_state
+        return payload
 
     def forfeit(self, player_id: str) -> bool:
         player = self.players.get(player_id)
@@ -566,6 +588,7 @@ class Engine:
         player.hp = 0
         player.forfeited = True
         self.last_events = [{"type": "forfeit", "player": player_id}]
+        self.mode.on_forfeit(player_id, self.last_events)
         self.events_turn = self.turn
         reason = self._end_reason()
         if reason is not None:
@@ -589,6 +612,8 @@ class Engine:
             ],
             "events_turn": self.events_turn,
             "events": [dict(event) for event in self.last_events],
+            "mode": self.mode_name,
+            "mode_state": self.mode_state,
         }
         if for_player is not None:
             payload["you"] = for_player
@@ -616,6 +641,8 @@ class Engine:
                 }
                 for player in self.players.values()
             ],
+            "mode": self.mode_name,
+            "mode_state": self.mode_state,
         }
         if for_player is not None:
             payload["you"] = for_player
