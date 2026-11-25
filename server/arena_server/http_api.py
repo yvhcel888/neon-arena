@@ -103,10 +103,30 @@ class HttpApi:
         if self._stopping:
             writer.close()
             return
+        if len(self._handlers) >= self.config.max_clients:
+            asyncio.create_task(self._reject_client(writer))
+            return
         task = asyncio.create_task(self._handle_client(reader, writer))
         self._handlers.add(task)
         self._writers.add(writer)
         task.add_done_callback(self._handlers.discard)
+
+    async def _reject_client(self, writer: asyncio.StreamWriter) -> None:
+        try:
+            if not self._stopping:
+                await self._write_response(
+                    writer, 503,
+                    self._error("server_full", "the server is full"),
+                )
+                # Closing with unread request bytes resets Windows sockets
+                # and can discard the rejection before the peer receives it.
+                await asyncio.sleep(0)
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            writer.close()
+            with suppress(asyncio.CancelledError, Exception):
+                await writer.wait_closed()
 
     async def _handle_client(self, reader: asyncio.StreamReader,
                              writer: asyncio.StreamWriter) -> None:

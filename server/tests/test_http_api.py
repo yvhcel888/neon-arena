@@ -185,6 +185,27 @@ class HttpHarness(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.02)
         self.fail(f"session did not reach {wanted!r}; last view={view!r}")
 
+    async def test_http_handler_limit_rejects_second_idle_connection(self):
+        await self.restart(max_clients=1, tick_ms=5000, lobby_wait_ms=5000)
+        first_reader, first_writer = await asyncio.open_connection(
+            "127.0.0.1", self.api_port,
+        )
+        self.writers.append(first_writer)
+        deadline = asyncio.get_running_loop().time() + 1
+        while len(self.server.http._handlers) < 1:
+            self.assertLess(asyncio.get_running_loop().time(), deadline)
+            await asyncio.sleep(0)
+
+        status, data, headers = await self.raw_request(
+            b"GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(data["error"]["code"], "server_full")
+        self.assertEqual(headers["connection"], "close")
+        self.assertEqual(len(self.server.http._handlers), 1)
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(first_reader.read(), 0.05)
+
     async def test_stop_cancels_delayed_handler_without_late_response(self):
         entered = asyncio.Event()
         cancelled = asyncio.Event()
