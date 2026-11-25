@@ -92,6 +92,12 @@ class Match:
                 if self.server.config.verbose:
                     traceback.print_exc()
 
+    def close_log(self) -> None:
+        try:
+            self.log.close()
+        except Exception:
+            traceback.print_exc()
+
     async def _finish(self, end_payload: dict) -> None:
         if self._finishing:
             return
@@ -105,10 +111,7 @@ class Match:
                 self.log.write(deepcopy(end_payload))
             except Exception:
                 traceback.print_exc()
-            try:
-                self.log.close()
-            except Exception:
-                traceback.print_exc()
+            self.close_log()
         finally:
             await self.on_end(self)
 
@@ -198,7 +201,7 @@ class Match:
         except asyncio.CancelledError:
             self.closed = True
             self.deadline = None
-            self.log.close()
+            self.close_log()
             raise
         except Exception:
             traceback.print_exc()
@@ -209,7 +212,7 @@ class Match:
                     await self._finish(self.engine.end_payload(reason="aborted"))
                 except Exception:
                     traceback.print_exc()
-            self.log.close()
+            self.close_log()
 
     def submit(self, participant, turn, action) -> dict:
         if (participant not in self.participants

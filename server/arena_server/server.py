@@ -83,12 +83,17 @@ class GameServer:
             self._match_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await self._match_task
-        if self.match is not None:
-            self.match.log.close()
-            for participant in self.match.participants:
-                participant.state = "idle"
-                participant.match = None
-            self.match = None
+        match = self.match
+        if match is not None:
+            try:
+                match.log.close()
+            except Exception:
+                traceback.print_exc()
+            finally:
+                for participant in match.participants:
+                    participant.state = "idle"
+                    participant.match = None
+                self.match = None
 
     async def run_forever(self) -> None:
         try:

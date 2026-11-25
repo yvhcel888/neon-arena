@@ -1,11 +1,22 @@
 import asyncio
+from contextlib import redirect_stderr
+import io
 import unittest
 
-from arena_server.config import Rules
+from arena_server.config import Rules, ServerConfig
 from arena_server.engine import ActionError, Engine, MapData, NODE_POINTS
 from arena_server.logging_utils import NullLog
 from arena_server.match import Match
 from arena_server.participants import Participant
+from arena_server.server import GameServer
+
+
+class AlwaysFailCloseLog:
+    def write(self, payload):
+        pass
+
+    def close(self):
+        raise OSError("persistent close failure")
 
 
 class RecordingServer:
@@ -71,6 +82,80 @@ class MatchDeadlineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(match.deadline)
         self.assertEqual(ends, [match])
+
+
+class MatchShutdownTests(unittest.IsolatedAsyncioTestCase):
+    def make_match(self, log=None, server=None, on_end=None):
+        participants = [
+            Participant("A", "agent", "http", player_id="P1"),
+            Participant("B", "agent", "http", player_id="P2"),
+        ]
+        engine = Engine(
+            Rules(turn_limit=3), [("A", "agent"), ("B", "agent")],
+            seed=3, match_id="shutdown-test",
+            map_data=MapData(15, 15, frozenset(), NODE_POINTS),
+        )
+        match = Match(
+            engine, participants, server or RecordingServer(), 1000, 0,
+            log or NullLog(), on_end,
+        )
+        return match, participants
+
+    async def test_server_stop_clears_match_when_log_close_always_fails(self):
+        server = GameServer(ServerConfig(no_logs=True))
+        match, participants = self.make_match(
+            log=AlwaysFailCloseLog(), server=server,
+        )
+        for participant in participants:
+            participant.state = "playing"
+            participant.match = match
+        server.match = match
+        diagnostics = io.StringIO()
+
+        with redirect_stderr(diagnostics):
+            await server.stop()
+
+        self.assertIn("persistent close failure", diagnostics.getvalue())
+        self.assertIsNone(server.match)
+        for participant in participants:
+            self.assertEqual(participant.state, "idle")
+            self.assertIsNone(participant.match)
+
+    async def test_match_cancellation_preserves_cancelled_error_when_log_close_fails(self):
+        entered = asyncio.Event()
+
+        async def wait_forever():
+            entered.set()
+            await asyncio.Event().wait()
+
+        match, _ = self.make_match(log=AlwaysFailCloseLog())
+        original_run = match.run
+        match.run = wait_forever
+        task = asyncio.create_task(match.run())
+        await entered.wait()
+        match.run = original_run
+        task.cancel()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+    async def test_match_cancel_handler_survives_log_close_failure(self):
+        log = AlwaysFailCloseLog()
+
+        async def broadcast_spectators(message):
+            raise asyncio.CancelledError
+
+        match, _ = self.make_match(log=log)
+        match.closed = False
+        match.server.broadcast_spectators = broadcast_spectators
+        diagnostics = io.StringIO()
+
+        with redirect_stderr(diagnostics):
+            with self.assertRaises(asyncio.CancelledError):
+                await match.run()
+
+        self.assertTrue(match.closed)
+        self.assertIn("persistent close failure", diagnostics.getvalue())
 
 
 if __name__ == "__main__":
