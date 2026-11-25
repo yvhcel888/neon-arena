@@ -312,6 +312,23 @@ class BountyModeTests(unittest.TestCase):
         damage = next(ev for ev in e.last_events if ev["type"] == "damage")
         self.assertTrue(damage["bounty"])
 
+    def test_explicit_forfeit_updates_targets_without_adding_events(self):
+        e = self.make()
+        e.resolve({"P1": {"type": "attack", "dir": "e"},
+                   "P2": {"type": "wait"}, "P3": {"type": "wait"}})
+        self.assertTrue(any(event["type"] == "damage"
+                            for event in e.last_events))
+        e.players["P2"].bounty_streak = 2
+
+        self.assertTrue(e.forfeit("P2"))
+
+        self.assertFalse(e.finished)
+        self.assertEqual(e.last_events,
+                         [{"type": "forfeit", "player": "P2"}])
+        self.assertEqual(e.mode_state["targets"],
+                         {"P1": "P3", "P2": None, "P3": "P1"})
+        self.assertEqual(e.players["P2"].bounty_streak, 0)
+
     def test_target_kill_reward_and_retarget(self):
         e = self.make()
         e.players["P2"].hp = 5
@@ -328,9 +345,29 @@ class BountyModeTests(unittest.TestCase):
         self.assertEqual(e.players["P1"].bounty_streak, 1)
         self.assertEqual(e.mode_state["targets"]["P1"], "P3")
         self.assertEqual(e.mode_state["targets"]["P3"], "P1")
-        self.assertIn({"type": "bounty_complete", "player": "P1",
-                       "target": "P2", "bonus": 50, "streak": 1},
-                      e.last_events)
+        self.assertEqual(e.last_events, [
+            {"type": "attack", "player": "P1", "dir": "e",
+             "target": [6, 5]},
+            {"type": "damage", "player": "P1", "target": "P2",
+             "hp_damage": 5, "shield_damage": 0, "bounty": True},
+            {"type": "death", "player": "P2", "killer": "P1"},
+            {"type": "bounty_complete", "player": "P1", "target": "P2",
+             "bonus": 50, "streak": 1},
+            {"type": "bounty_retarget", "player": "P1", "target": "P3"},
+        ])
+
+    def test_dead_player_serializes_cleared_bounty_state(self):
+        e = self.make()
+        e.players["P2"].hp = 5
+        e.players["P2"].bounty_streak = 2
+        e.resolve({"P1": {"type": "attack", "dir": "e"},
+                   "P2": {"type": "wait"}, "P3": {"type": "wait"}})
+
+        dead = next(player for player in e.state_payload()["players"]
+                    if player["id"] == "P2")
+        self.assertFalse(dead["alive"])
+        self.assertIsNone(dead["bounty_target"])
+        self.assertEqual(dead["bounty_streak"], 0)
 
     def test_target_kill_reward_caps_at_65_from_fourth_kill(self):
         e = self.make()

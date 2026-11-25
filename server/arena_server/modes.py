@@ -151,7 +151,8 @@ class BountyMode(GameMode):
                            "target": target.id, "bonus": bonus,
                            "streak": attacker.bounty_streak})
 
-    def after_missed(self, events):
+    def _retarget(self):
+        events = []
         living = sorted(player.id for player in self.engine.players.values()
                         if player.alive)
         for player_id, player in self.engine.players.items():
@@ -170,9 +171,13 @@ class BountyMode(GameMode):
                 events.append({"type": "bounty_retarget", "player": player_id,
                                "target": target})
             self.state["targets"][player_id] = target
+        return events
+
+    def after_missed(self, events):
+        events.extend(self._retarget())
 
     def on_forfeit(self, player_id, events):
-        self.after_missed(events)
+        self._retarget()
 
     def score_limit_reached(self):
         return any(player.score >= self.state["target_score"]
