@@ -85,6 +85,19 @@ class ModeAwareHeuristicTests(unittest.TestCase):
         action = policy.decide(state([1, 1], []))
         self.assertIn(action["type"], {"move", "dash"})
 
+    def test_survival_uses_current_zone_before_gathering(self):
+        policy = HeuristicPolicy("collector")
+        policy.on_start(start("survival", {
+            "zone": {"min": [1, 1], "max": [13, 13]},
+        }))
+        snapshot = state([1, 1], [], nodes=[{
+            "pos": [1, 1], "cooldown": 0, "active": True,
+        }], mode="survival", mode_state={
+            "zone": {"min": [6, 6], "max": [8, 8]},
+        })
+        self.assertEqual(policy.decide(snapshot),
+                         {"type": "move", "dir": "e"})
+
     def test_team_does_not_target_friendly_player(self):
         policy = HeuristicPolicy("aggressive")
         policy.on_start(start("team", {"teams": []}))

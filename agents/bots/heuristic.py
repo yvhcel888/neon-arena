@@ -135,6 +135,9 @@ class HeuristicPolicy(Policy):
         legal = legal_actions(self.start_payload, state, player_id)
         allowed = {(action["type"], action.get("dir")) for action in legal}
         width, height, _ = self._geometry()
+        mode_state = state.get("mode_state")
+        if not isinstance(mode_state, dict):
+            mode_state = self.mode_state
 
         def take(action):
             if action and (action["type"], action.get("dir")) in allowed:
@@ -143,7 +146,7 @@ class HeuristicPolicy(Policy):
 
         # Escaping active storm damage takes precedence over all other goals.
         if self.mode == "survival" and me.get("in_storm", False):
-            zone = self._zone_bounds(self.mode_state, ([1, 1], [13, 13]))
+            zone = self._zone_bounds(mode_state, ([1, 1], [13, 13]))
             if not self._inside(position(me.get("pos")), zone):
                 action = take(self._move_toward(
                     state, me, self._zone_cells(zone, width, height), allowed,
@@ -181,7 +184,7 @@ class HeuristicPolicy(Policy):
 
         # King of the Hill has an explicit movement objective.
         if self.mode == "king":
-            zone = self._zone_bounds(self.mode_state, ([6, 6], [8, 8]))
+            zone = self._zone_bounds(mode_state, ([6, 6], [8, 8]))
             if not self._inside(position(me.get("pos")), zone):
                 action = take(self._move_toward(
                     state, me, self._zone_cells(zone, width, height), allowed,
@@ -200,7 +203,7 @@ class HeuristicPolicy(Policy):
         if self.mode == "bounty":
             target_id = me.get("bounty_target")
             if not target_id:
-                target_id = (self.mode_state.get("targets") or {}).get(me.get("id"))
+                target_id = (mode_state.get("targets") or {}).get(me.get("id"))
             assigned = next((enemy for enemy in enemies
                              if enemy.get("id") == target_id), None)
             if assigned is not None:
