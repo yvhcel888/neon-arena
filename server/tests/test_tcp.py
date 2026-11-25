@@ -148,6 +148,70 @@ class TcpHarness(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(end["reason"], "last_standing")
         self.assertEqual(end["winner"]["id"], "P1")
 
+    async def test_rejoined_player_does_not_receive_old_match_delivery(self):
+        await self.restart(tick_ms=1000, min_turn_ms=0, turn_limit=2,
+                           lobby_wait_ms=20)
+        r1, w1 = await self.connect()
+        r2, w2 = await self.connect()
+        r3, w3 = await self.connect()
+        starts = await asyncio.gather(
+            self.join(r1, w1, "A"), self.join(r2, w2, "B"),
+            self.join(r3, w3, "C"),
+        )
+        old_match = self.server.match
+        old_participant = next(
+            participant for participant in old_match.participants
+            if participant.name == "C"
+        )
+        old_match_id = starts[0]["match_id"]
+        states = await asyncio.gather(
+            self.read_until(r1, "state"), self.read_until(r2, "state"),
+            self.read_until(r3, "state"),
+        )
+        self.assertEqual(states[2]["you"], "P3")
+
+        await self.send(w3, {"type": "leave"})
+        await self.read_until(r3, "left")
+        await self.send(w3, {"type": "join", "protocol": 1,
+                             "name": "C-new"})
+        await self.read_until(r3, "joined")
+        self.assertEqual(len(self.server.lobby.waiting), 1)
+        rejoined = self.server.lobby.waiting[0]
+        self.assertIsNot(rejoined, old_participant)
+
+        for reader, writer in ((r1, w1), (r2, w2)):
+            await self.send(writer, {
+                "type": "action", "turn": 1, "action": {"type": "wait"},
+            })
+            await self.read_until(reader, "action_ack")
+        next_states = await asyncio.gather(
+            self.read_until(r1, "state"), self.read_until(r2, "state"),
+        )
+        self.assertEqual([state["turn"] for state in next_states], [2, 2])
+        for reader, writer in ((r1, w1), (r2, w2)):
+            await self.send(writer, {
+                "type": "action", "turn": 2, "action": {"type": "wait"},
+            })
+        ends = await asyncio.gather(
+            self.read_until(r1, "end"), self.read_until(r2, "end"),
+        )
+        self.assertEqual([end["match_id"] for end in ends],
+                         [old_match_id, old_match_id])
+
+        # The old end was queued before P1/P2 observed it. A subsequent pong
+        # establishes an ordering barrier so stale delivery cannot arrive later.
+        await self.send(w3, {"type": "ping", "ts": "drained"})
+        messages = []
+        while True:
+            message = await self.read_json(r3)
+            messages.append(message)
+            if message["type"] == "pong":
+                self.assertEqual(message["ts"], "drained")
+                break
+        stale = [message for message in messages
+                 if message["type"] in ("state", "end")]
+        self.assertEqual(stale, [], "rejoined connection received old match data")
+
     async def test_fixed_king_mode_reaches_start_and_state(self):
         await self.restart(mode="king")
         r1, w1 = await self.connect()

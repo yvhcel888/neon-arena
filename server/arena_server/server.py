@@ -289,8 +289,10 @@ class GameServer:
         active = (participant.state in ("lobby", "playing")
                   or participant.match is not None)
         changed = self.lobby.remove(participant)
-        if participant.match is not None:
-            await participant.match.forfeit(participant)
+        match = participant.match
+        if match is not None:
+            await match.forfeit(participant)
+            match.detach(participant)
         participant.state = "idle"
         participant.match = None
         if changed or active:

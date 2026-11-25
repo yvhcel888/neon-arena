@@ -16,6 +16,7 @@ class Match:
                  min_turn_ms: int, log, on_end):
         self.engine = engine
         self.participants = list(participants)
+        self.detached: set = set()
         self.server = server
         self.tick_ms = tick_ms
         self.min_turn_ms = min_turn_ms
@@ -33,6 +34,17 @@ class Match:
         self._reply_by_ms: int | None = None
         self.deadline: float | None = None
         self._finishing = False
+
+    def _delivery_participants(self):
+        return (participant for participant in self.participants
+                if participant not in self.detached)
+
+    def detach(self, participant) -> bool:
+        if participant not in self.participants or participant in self.detached:
+            return False
+        self.detached.add(participant)
+        self.pending.pop(participant.player_id, None)
+        return True
 
     def _make_start(self, player_id: str | None) -> dict:
         payload = deepcopy(self.engine.start_payload(player_id))
@@ -58,7 +70,7 @@ class Match:
 
     def _refresh_current_views(self) -> None:
         completed = self.engine.completed_turns
-        for participant in self.participants:
+        for participant in self._delivery_participants():
             player_id = participant.player_id
             view = self._make_state(player_id, self._reply_by_ms)
             view["turn"] = completed
@@ -72,7 +84,7 @@ class Match:
         self.current_spectator_view = spectator
 
     async def _send_to_participants(self, message: dict) -> None:
-        for participant in self.participants:
+        for participant in self._delivery_participants():
             try:
                 await self.server.send(participant, deepcopy(message))
             except Exception:
@@ -96,10 +108,10 @@ class Match:
         try:
             self.start_payload = self._make_start(None)
             self.log.write(deepcopy(self.start_payload))
-            for participant in self.participants:
+            for participant in self._delivery_participants():
                 start = self._make_start(participant.player_id)
                 self.start_payloads[participant.player_id] = start
-            for participant in self.participants:
+            for participant in self._delivery_participants():
                 try:
                     await self.server.send(
                         participant,
@@ -118,7 +130,7 @@ class Match:
                 loop = asyncio.get_running_loop()
                 self.deadline = loop.time() + self.tick_ms / 1000
 
-                for participant in self.participants:
+                for participant in self._delivery_participants():
                     state = self._make_state(participant.player_id,
                                              self._reply_by_ms)
                     self.current_views[participant.player_id] = state
@@ -192,7 +204,8 @@ class Match:
             self.log.close()
 
     def submit(self, participant, turn, action) -> dict:
-        if participant not in self.participants:
+        if (participant not in self.participants
+                or participant in self.detached):
             raise ActionError("not_in_match", "participant is not in this match")
         if self.closed or self.engine.finished:
             raise ActionError("turn_closed", "the turn is already closed")
@@ -217,7 +230,8 @@ class Match:
         return normalized
 
     async def forfeit(self, participant, reason: str = "forfeit") -> bool:
-        if participant not in self.participants:
+        if (participant not in self.participants
+                or participant in self.detached):
             return False
         changed = self.engine.forfeit(participant.player_id)
         if changed:
