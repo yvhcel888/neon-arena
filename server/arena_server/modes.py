@@ -102,7 +102,7 @@ class KingMode(GameMode):
                 self.state["streaks"][player.id] = 0
 
     def score_limit_reached(self):
-        return any(p.alive and p.score >= self.state["target_score"]
+        return any(p.score >= self.state["target_score"]
                    for p in self.engine.players.values())
 
 
