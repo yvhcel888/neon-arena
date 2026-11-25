@@ -616,6 +616,24 @@ class HttpHarness(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(headers["access-control-allow-origin"],
                          "http://one.example")
 
+    async def test_oversized_headers_preserve_allowed_origin_after_padding(self):
+        await self.restart(
+            cors_origin="http://allowed.example",
+            tick_ms=5000, lobby_wait_ms=5000,
+        )
+        status, data, headers = await self.raw_request(
+            b"GET /api/v1/health HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\nX-Pad: "
+            + b"x" * (18 * 1024)
+            + b"\r\nOrigin: http://allowed.example\r\nX-Tail: "
+            + b"y" * (20 * 1024)
+            + b"\r\n\r\n"
+        )
+        self.assertEqual(status, 431)
+        self.assertEqual(data["error"]["code"], "headers_too_large")
+        self.assertEqual(headers.get("access-control-allow-origin"),
+                         "http://allowed.example")
+
     async def test_expired_session_cleanup_removes_lobby_and_ended_sessions(self):
         token, _ = await self.create_session("Stale")
         session = self.server.sessions.get(token)

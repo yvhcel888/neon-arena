@@ -18,6 +18,8 @@ LOGGER = logging.getLogger(__name__)
 
 MAX_HEADER_BYTES = 16 * 1024
 MAX_BODY_BYTES = 32 * 1024
+STREAM_LIMIT_BYTES = max(MAX_HEADER_BYTES, MAX_BODY_BYTES) + 4
+HEADER_SCAN_BYTES = STREAM_LIMIT_BYTES + 4 * 1024
 READ_TIMEOUT_SECONDS = 10.0
 API_PATHS = {
     "/api/v1/health", "/api/v1/rules", "/api/v1/sessions",
@@ -73,7 +75,7 @@ class HttpApi:
         self._stopping = False
         self._server = await asyncio.start_server(
             self._client_connected, self.config.host, self.config.api_port,
-            limit=max(MAX_HEADER_BYTES, MAX_BODY_BYTES) + 4,
+            limit=STREAM_LIMIT_BYTES,
         )
         sockets = self._server.sockets or []
         self.port = sockets[0].getsockname()[1]
@@ -199,7 +201,7 @@ class HttpApi:
         try:
             raw_headers = await reader.readuntil(b"\r\n\r\n")
         except asyncio.LimitOverrunError as exc:
-            partial = await reader.read(MAX_HEADER_BYTES)
+            partial = await reader.read(HEADER_SCAN_BYTES)
             request = self._request_metadata(partial)
             raise ApiError(431, "headers_too_large",
                            "request headers exceed 16 KiB",
