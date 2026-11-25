@@ -148,5 +148,89 @@ class KingModeTests(unittest.TestCase):
         self.assertEqual(e.end_payload()["winner"]["id"], "P1")
 
 
+class TeamModeTests(unittest.TestCase):
+    def make(self):
+        e = Engine(Rules(), [("A", "human"), ("B", "agent"),
+                             ("C", "human"), ("D", "agent")],
+                   seed=2, map_data=MapData(15, 15, frozenset(), NODE_POINTS),
+                   mode="team")
+        for pid, pos in {"P1": (5, 5), "P2": (5, 7),
+                         "P3": (6, 5), "P4": (9, 9)}.items():
+            e.players[pid].pos = pos
+            e.players[pid].energy = 50
+        return e
+
+    def test_teams_and_friendly_fire(self):
+        e = self.make()
+        self.assertEqual(e.state_payload()["players"][0]["team"], "T1")
+        self.assertEqual(e.state_payload()["players"][2]["team"], "T2")
+        e.players["P2"].pos = (6, 5)
+        e.players["P2"].shield = 13
+        e.players["P3"].pos = (8, 5)
+        e.resolve({"P1": {"type": "attack", "dir": "e"},
+                   "P2": {"type": "wait"}, "P3": {"type": "wait"},
+                   "P4": {"type": "wait"}})
+        self.assertEqual(e.players["P2"].hp, 100)
+        self.assertEqual(e.players["P2"].shield, 13)
+        self.assertEqual(e.players["P1"].score, 0)
+        self.assertEqual(e.players["P1"].energy, 46)
+        self.assertIn({"type": "friendly_blocked", "player": "P1",
+                       "target": "P2"}, e.last_events)
+        self.assertFalse(any(event["type"] == "damage"
+                             for event in e.last_events))
+
+    def test_enemy_damage_scores_and_team_total_updates(self):
+        e = self.make()
+        e.resolve({"P1": {"type": "attack", "dir": "e"},
+                   "P2": {"type": "wait"}, "P3": {"type": "wait"},
+                   "P4": {"type": "wait"}})
+        self.assertEqual(e.players["P3"].hp, 78)
+        self.assertEqual(e.players["P1"].score, 22)
+        teams = {row["id"]: row for row in e.mode_state["teams"]}
+        self.assertEqual(teams["T1"]["score"], 22)
+        self.assertEqual(teams["T2"]["alive"], 2)
+
+    def test_team_elimination_has_team_winner(self):
+        e = self.make()
+        e.forfeit("P3")
+        e.forfeit("P4")
+        self.assertTrue(e.finished)
+        payload = e.end_payload()
+        self.assertEqual(payload["reason"], "last_standing")
+        self.assertEqual(payload["winner"],
+                         {"id": "T1", "name": "Team A", "kind": "team",
+                          "members": ["P1", "P2"]})
+        self.assertEqual(len(payload["team_standings"]), 2)
+
+    def test_team_requires_exactly_four_players(self):
+        for count in (2, 3):
+            with self.subTest(count=count):
+                players = [("Agent", "agent")] * count
+                with self.assertRaisesRegex(
+                        ValueError, "team mode requires exactly 4 players"):
+                    Engine(Rules(), players, seed=2,
+                           map_data=MapData(15, 15, frozenset(), NODE_POINTS),
+                           mode="team")
+
+    def test_team_standings_use_hp_energy_and_id_tiebreakers(self):
+        e = self.make()
+        for player in e.players.values():
+            player.score = 10
+            player.energy = 20
+
+        e.players["P2"].hp = 90
+        self.assertEqual(e.end_payload(reason="turn_limit")
+                         ["team_standings"][0]["id"], "T2")
+
+        e.players["P2"].hp = 100
+        e.players["P3"].energy = 30
+        self.assertEqual(e.end_payload(reason="turn_limit")
+                         ["team_standings"][0]["id"], "T2")
+
+        e.players["P3"].energy = 20
+        self.assertEqual(e.end_payload(reason="turn_limit")
+                         ["team_standings"][0]["id"], "T1")
+
+
 if __name__ == "__main__":
     unittest.main()

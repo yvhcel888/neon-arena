@@ -453,6 +453,10 @@ class Engine:
             })
             if target is None:
                 continue
+            if self.mode.friendly(player.id, target.id):
+                events.append({"type": "friendly_blocked", "player": player.id,
+                               "target": target.id})
+                continue
             shield_damage = min(target.shield, self.rules.attack_damage)
             hp_damage = self.rules.attack_damage - shield_damage
             target.shield -= shield_damage
