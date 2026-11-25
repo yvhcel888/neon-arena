@@ -1,10 +1,11 @@
+import copy
 import io
 import json
 import os
 import unittest
 from unittest.mock import patch
 
-from arena_agent.policy import Policy
+from arena_agent.policy import Policy, legal_actions
 from bots.heuristic import HeuristicPolicy
 from bots.llm_agent import LlmPolicy, parse_action
 
@@ -50,11 +51,13 @@ class FixedFallback(Policy):
     def __init__(self, action):
         self.action = action
         self.starts = []
+        self.calls = []
 
     def on_start(self, start):
         self.starts.append(start)
 
     def decide(self, state):
+        self.calls.append(state)
         return dict(self.action)
 
 
@@ -82,16 +85,65 @@ class LlmPolicyTests(unittest.TestCase):
                         "target": "P2"}],
         }
 
-    def test_prompt_contains_rules_mode_state_players_nodes_and_events(self):
+    def test_prompt_contains_geometry_and_exact_visible_legal_actions(self):
+        self.start["arena"]["walls"] = [[2, 1]]
         policy = LlmPolicy(fallback=False, logger=lambda *_: None)
         policy.on_start(self.start)
         prompt = policy.build_prompt(self.state)
+        payload = json.loads(prompt.split("\n", 1)[1])
+        self.assertEqual(payload["arena"], {
+            "width": 15, "height": 15, "walls": [[2, 1]],
+        })
+        self.assertEqual(payload["legal_actions"],
+                         legal_actions(self.start, self.state, "P1"))
+        self.assertNotIn({"type": "move", "dir": "e"},
+                         payload["legal_actions"])
         self.assertIn("bounty", prompt)
         self.assertIn("target_score", prompt)
         self.assertIn("P2", prompt)
         self.assertIn("nodes", prompt)
         self.assertIn("bounty_retarget", prompt)
         self.assertIn("shared decision window", prompt)
+
+    def test_illegal_model_actions_use_fallback(self):
+        full_hp = copy.deepcopy(self.state)
+        full_shield = copy.deepcopy(self.state)
+        full_shield["players"][0]["shield"] = 40
+        no_energy = copy.deepcopy(self.state)
+        no_energy["players"][0]["energy"] = 0
+        occupied = copy.deepcopy(self.state)
+        occupied["players"].append({
+            "id": "P3", "pos": [2, 1], "hp": 100,
+            "energy": 80, "shield": 0, "alive": True,
+        })
+        cases = [
+            ("border wall move", self.state, {"type": "move", "dir": "w"}),
+            ("gather off node", self.state, {"type": "gather"}),
+            ("heal at full hp", full_hp, {"type": "heal"}),
+            ("shield at full", full_shield, {"type": "shield"}),
+            ("dash without energy", no_energy, {"type": "dash", "dir": "e"}),
+            ("occupied move", occupied, {"type": "move", "dir": "e"}),
+        ]
+        for name, snapshot, action in cases:
+            with self.subTest(case=name):
+                self.assertNotIn(action,
+                                 legal_actions(self.start, snapshot, "P1"))
+                fallback = FixedFallback({"type": "heal"})
+                policy = LlmPolicy(
+                    fallback_policy=fallback, logger=lambda *_: None,
+                    opener=lambda *args, **kwargs: completion(json.dumps(action)),
+                )
+                policy.on_start(self.start)
+                self.assertEqual(policy.decide(snapshot), {"type": "heal"})
+                self.assertEqual(fallback.calls, [snapshot])
+
+    def test_illegal_model_action_without_fallback_waits(self):
+        policy = LlmPolicy(
+            fallback=False, logger=lambda *_: None,
+            opener=lambda *args, **kwargs: completion('{"type":"gather"}'),
+        )
+        policy.on_start(self.start)
+        self.assertEqual(policy.decide(self.state), {"type": "wait"})
 
     def test_request_uses_env_configuration_and_tick_bounded_timeout(self):
         now = [100.0]

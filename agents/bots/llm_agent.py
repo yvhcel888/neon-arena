@@ -9,7 +9,9 @@ import time
 import urllib.request
 
 from arena_agent.client import run_agent
-from arena_agent.policy import Policy, find_player
+from arena_agent.policy import (
+    Policy, arena_geometry, find_player, legal_actions,
+)
 from arena_agent.protocol import DIRS
 from .heuristic import HeuristicPolicy
 
@@ -96,11 +98,18 @@ class LlmPolicy(Policy):
             self.fallback.on_start(start)
 
     def build_prompt(self, state):
-        me = find_player(state, state.get("you"))
+        you = state.get("you", self.start_payload.get("you"))
+        me = find_player(state, you)
         enemies = [row for row in state.get("players", [])
-                   if isinstance(row, dict) and row.get("id") != state.get("you")
+                   if isinstance(row, dict) and row.get("id") != you
                    and row.get("alive", False)]
+        width, height, walls = arena_geometry(self.start_payload)
         payload = {
+            "arena": {
+                "width": width, "height": height,
+                "walls": [list(wall) for wall in sorted(walls)],
+            },
+            "legal_actions": legal_actions(self.start_payload, state, you),
             "rules": self.start_payload.get("rules", {}),
             "mode": state.get("mode", self.mode),
             "mode_description": MODE_DESCRIPTIONS.get(
@@ -114,8 +123,8 @@ class LlmPolicy(Policy):
         }
         return (
             "You are a NEON ARENA agent. All players use the same shared decision "
-            "window; there is no real-time control. Choose exactly one legal JSON action "
-            "for the current turn. Use move/dash/attack with dir n/e/s/w, or "
+            "window; there is no real-time control. Choose exactly one action from "
+            "legal_actions for the current turn. Use move/dash/attack with dir n/e/s/w, or "
             "gather/shield/heal/wait. Respect walls, occupants, energy, friendly "
             "players, and the mode objective. Return only the action object.\n"
             + json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
@@ -177,7 +186,8 @@ class LlmPolicy(Policy):
         try:
             text = self._complete(self.build_prompt(state), timeout_seconds)
             action = parse_action(text)
-            if action is None:
+            you = state.get("you", self.start_payload.get("you"))
+            if action not in legal_actions(self.start_payload, state, you):
                 action = self._fallback_action(state)
         except Exception as exc:
             # Never include response bodies, request headers, or exception text:
