@@ -335,7 +335,7 @@ class KingMode(GameMode):
                 self.state["streaks"][player.id] = 0
 
     def score_limit_reached(self):
-        return any(p.alive and p.score >= self.state["target_score"]
+        return any(p.score >= self.state["target_score"]
                    for p in self.engine.players.values())
 
 
@@ -646,7 +646,7 @@ Expected: `unknown mode: bounty`。
   - 非目标击杀返回 25。
 - `after_deaths()` 解析本回合 `death` 事件，对赏金击杀追加 `bounty_complete` 并增加击杀者连杀。
 - `after_missed()` 为所有存活玩家按 ID 循环重找下一名存活且非自己的玩家，目标变化时追加 `bounty_retarget`；死亡玩家目标设为 `None`、连杀清零。
-- `score_limit_reached()` 检查任一存活玩家分数是否达到 150。
+- `score_limit_reached()` 检查任一玩家分数是否达到 150，包含同回合达到目标后死亡的玩家。
 - 在工厂注册 `"bounty": BountyMode`。
 
 - [ ] **Step 4: 运行测试**
