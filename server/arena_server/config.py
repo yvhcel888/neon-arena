@@ -58,6 +58,7 @@ class ServerConfig:
     cors_origin: str = "*"
     max_clients: int = 32
     verbose: bool = False
+    mode: str = "rotation"
 
     def rules(self) -> Rules:
         return Rules(turn_limit=self.turn_limit)
