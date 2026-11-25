@@ -1,9 +1,12 @@
 import asyncio
+from contextlib import redirect_stderr
+import io
 import json
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from arena_server.config import ServerConfig
 from arena_server.server import GameServer
@@ -413,6 +416,44 @@ class TcpHarness(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(record["mode"], "classic")
                 self.assertIn("mode_state", record)
                 self.assertEqual(record["match_id"], ends[0]["match_id"])
+
+    async def test_end_log_failures_still_deliver_end_and_release_match(self):
+        class FailingEndLog:
+            def __init__(self):
+                self.close_attempts = 0
+
+            def write(self, message):
+                if message["type"] == "end":
+                    raise OSError("end write failed")
+
+            def close(self):
+                self.close_attempts += 1
+                if self.close_attempts == 2:
+                    raise OSError("close failed")
+
+        log = FailingEndLog()
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), patch(
+            "arena_server.server.NullLog", return_value=log,
+        ):
+            await self.restart(tick_ms=1000, min_turn_ms=0, turn_limit=1)
+            r1, w1 = await self.connect()
+            r2, w2 = await self.connect()
+            await asyncio.gather(self.join(r1, w1, "A"),
+                                 self.join(r2, w2, "B"))
+            match_task = self.server._match_task
+            ends = await asyncio.gather(self.play_waits(r1, w1),
+                                        self.play_waits(r2, w2))
+            results = await asyncio.gather(match_task, return_exceptions=True)
+            # Do not let teardown repeat the injected close failure.
+            log.close_attempts = 2
+
+        self.assertEqual([end["reason"] for end in ends],
+                         ["turn_limit", "turn_limit"])
+        self.assertEqual(results, [None])
+        self.assertIsNone(self.server.match)
+        self.assertIn("OSError: end write failed", stderr.getvalue())
+        self.assertIn("OSError: close failed", stderr.getvalue())
 
     async def test_graceful_stop_closes_connections_and_is_idempotent(self):
         reader, writer = await self.connect()

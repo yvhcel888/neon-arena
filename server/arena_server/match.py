@@ -98,11 +98,19 @@ class Match:
         self._finishing = True
         self.closed = True
         self.deadline = None
-        await self._send_to_participants(end_payload)
-        await self.server.broadcast_spectators(deepcopy(end_payload))
-        self.log.write(deepcopy(end_payload))
-        self.log.close()
-        await self.on_end(self)
+        try:
+            await self._send_to_participants(end_payload)
+            await self.server.broadcast_spectators(deepcopy(end_payload))
+            try:
+                self.log.write(deepcopy(end_payload))
+            except Exception:
+                traceback.print_exc()
+            try:
+                self.log.close()
+            except Exception:
+                traceback.print_exc()
+        finally:
+            await self.on_end(self)
 
     async def run(self) -> None:
         try:

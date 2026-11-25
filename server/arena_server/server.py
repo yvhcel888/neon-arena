@@ -249,7 +249,10 @@ class GameServer:
         for participant in match.participants:
             participant.state = "idle"
             participant.match = None
-        match.log.close()
+        try:
+            match.log.close()
+        except Exception:
+            traceback.print_exc()
         LOGGER.info(
             "Match %s ended: reason=%s turns=%s",
             match.engine.match_id, match.engine.end_reason,
