@@ -565,11 +565,13 @@ git commit -m "feat(server): add survival shrinking-zone mode"
 
 **Files:**
 - Modify: `server/arena_server/modes.py`
+- Modify: `server/arena_server/engine.py`
 - Test: `server/tests/test_modes.py`
+- Test: `server/tests/test_combat.py`
 
 **Interfaces:**
 - Consumes: Task 2 的伤害/击杀钩子与 `after_missed`。
-- Produces: `mode="bounty"`、玩家 `bounty_target/bounty_streak`、赏金事件与 150 分结束。
+- Produces: `mode="bounty"`、玩家 `bounty_target/bounty_streak`、赏金事件与 150 分结束；共享引擎按实际剩余 HP 计算致命伤害、伤害统计与得分。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -641,8 +643,9 @@ Expected: `unknown mode: bounty`。
 - `setup()` 按 ID 循环建立 `targets`，`target_score=150`；每名玩家 `bounty_streak=0`。
 - `player_fields()` 返回 `bounty_target` 与 `bounty_streak`。
 - `damage_multiplier()` 在目标是当前赏金目标时返回 2，否则 1。
+- Engine 在护盾吸收后把 HP 伤害截断到目标实际剩余 HP；`damage_dealt`、伤害事件、击杀归属与得分统一使用该实际值，BountyMode 不再做事后重构修正。
 - `kill_reward()`：
-  - 目标击杀返回 `25 + 25 + min(previous_streak,4)*5`。
+  - 目标击杀返回 `25 + 25 + min(previous_streak,3)*5`，奖励序列为 50/55/60/65/65。
   - 非目标击杀返回 25。
 - `after_deaths()` 解析本回合 `death` 事件，对赏金击杀追加 `bounty_complete` 并增加击杀者连杀。
 - `after_missed()` 为所有存活玩家按 ID 循环重找下一名存活且非自己的玩家，目标变化时追加 `bounty_retarget`；死亡玩家目标设为 `None`、连杀清零。
@@ -657,7 +660,7 @@ Expected: 全部 PASS，包括三名玩家均存活时的 `score_limit` 结束�
 - [ ] **Step 5: 提交**
 
 ```bash
-git add server/arena_server/modes.py server/tests/test_modes.py
+git add server/arena_server/modes.py server/arena_server/engine.py server/tests/test_modes.py server/tests/test_combat.py
 git commit -m "feat(server): add bounty hunt mode"
 ```
 
