@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>NEON ARENA</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="ambient-grid" aria-hidden="true"></div>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="brand" aria-label="NEON ARENA">
+        <span class="brand-mark" aria-hidden="true">N</span>
+        <span><strong>NEON</strong> ARENA</span>
+      </div>
+      <div id="connection-status" class="connection-status" aria-live="polite">未连接</div>
+    </header>
+
+    <section id="screen-connect" class="screen active" aria-labelledby="connect-title">
+      <div class="hero-panel">
+        <p class="eyebrow">TURN-BASED / HUMAN + AGENTS</p>
+        <h1 id="connect-title">进入霓虹竞技场</h1>
+        <p class="hero-copy">同一张棋盘，同一个决策窗口。连接服务器，与人类玩家和 Agent 进行 2–4 人回合制对战。</p>
+        <div class="mode-strip" aria-label="五种游戏模式">
+          <span>CLASSIC</span><span>KING</span><span>TEAM</span><span>SURVIVAL</span><span>BOUNTY</span>
+        </div>
+      </div>
+      <div class="connect-layout">
+        <form id="connect-form" class="panel connect-form" novalidate>
+          <div class="field">
+            <label for="server">服务器地址</label>
+            <input id="server" name="server" type="url" value="http://127.0.0.1:8080" spellcheck="false" autocomplete="url" required>
+            <small>仅连接 HTTP API，不会向地址栏中的 URL 添加令牌。</small>
+          </div>
+          <div class="field">
+            <label for="name">玩家名称</label>
+            <input id="name" name="name" type="text" maxlength="20" placeholder="输入 1–20 个字符" autocomplete="nickname" required>
+          </div>
+          <button id="connect" class="button primary" type="button">健康检查并连接</button>
+          <p id="health-status" class="status-line" aria-live="polite">等待连接</p>
+          <p id="connect-error" class="error-line" role="alert"></p>
+        </form>
+        <aside class="panel briefing" aria-labelledby="briefing-title">
+          <p class="eyebrow">FIELD MANUAL</p>
+          <h2 id="briefing-title">一回合，一次行动</h2>
+          <ul class="briefing-list">
+            <li><strong>移动 / 冲刺 / 攻击</strong><span>先选行动，再选方向；WASD 与方向键同样可用。</span></li>
+            <li><strong>采集 / 护盾 / 治疗</strong><span>在资源节点充能，管理生命与护盾。</span></li>
+            <li><strong>等待</strong><span>空格键快速等待；提交后等待其他玩家。</span></li>
+          </ul>
+          <p class="muted">服务端是唯一权威。刷新页面可通过本地令牌恢复当前会话。</p>
+        </aside>
+      </div>
+    </section>
+
+    <section id="screen-lobby" class="screen" aria-labelledby="lobby-title" hidden>
+      <div class="screen-heading">
+        <div><p class="eyebrow">MATCH QUEUE</p><h1 id="lobby-title">等待开局</h1></div>
+        <button id="leave-lobby" class="button ghost" type="button">离开大厅</button>
+      </div>
+      <div class="lobby-grid">
+        <article class="panel mode-card">
+          <p class="eyebrow">NEXT MODE</p>
+          <h2 id="lobby-mode">—</h2>
+          <p id="lobby-mode-description" class="mode-description">正在读取下一局模式…</p>
+          <div class="lobby-countdown">
+            <div><span id="lobby-count">0 人</span><strong id="lobby-countdown">等待玩家</strong></div>
+            <div class="progress-track"><span id="lobby-progress" style="--progress: 0"></span></div>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="panel-heading"><h2>已连接玩家</h2><span class="tag">HUMAN / AGENT</span></div>
+          <ul id="lobby-players" class="player-list"></ul>
+        </article>
+      </div>
+      <article class="panel rules-panel">
+        <div class="panel-heading"><h2>规则速览</h2><span class="tag">SERVER AUTHORITATIVE</span></div>
+        <div id="lobby-rules" class="rules-grid">
+          <div><strong>七种行动</strong><span>移动、冲刺、攻击、采集、护盾、治疗、等待</span></div>
+          <div><strong>同时结算</strong><span>所有存活玩家共享同一截止时间</span></div>
+          <div><strong>积分决胜</strong><span>存活优先，其次比较分数、生命与能量</span></div>
+        </div>
+      </article>
+    </section>
+
+    <section id="screen-game" class="screen" aria-labelledby="game-title" hidden>
+      <h1 id="game-title" class="sr-only">NEON ARENA 对局</h1>
+      <div class="game-top panel">
+        <div class="game-identity">
+          <span id="mode-badge" class="mode-badge">CLASSIC</span>
+          <div><span class="micro-label">TURN</span><strong id="turn">— / —</strong></div>
+          <div><span class="micro-label">SCORE</span><strong id="game-score">0</strong></div>
+        </div>
+        <div class="turn-clock">
+          <div class="clock-label"><span>决策窗口</span><strong id="countdown">—</strong></div>
+          <div class="progress-track"><span id="countdown-progress" style="--progress: 1"></span></div>
+        </div>
+      </div>
+      <div id="mode-hud" class="mode-hud" aria-live="polite"></div>
+      <div class="game-layout">
+        <div class="board-column">
+          <div class="panel board-panel">
+            <div class="board-frame">
+              <canvas id="board" width="600" height="600" aria-label="NEON ARENA 棋盘">当前浏览器不支持 Canvas。</canvas>
+              <div class="scanlines" aria-hidden="true"></div>
+            </div>
+          </div>
+          <div class="panel controls-panel">
+            <div class="controls-heading">
+              <div><p class="eyebrow">TACTICAL INPUT</p><h2 id="selected-action-label">选择行动</h2></div>
+              <p id="game-status" class="game-status" aria-live="polite">选择行动</p>
+            </div>
+            <div class="action-buttons" aria-label="行动按钮">
+              <button id="action-move" class="button action" data-action="move" type="button"><kbd>1</kbd>移动</button>
+              <button id="action-dash" class="button action" data-action="dash" type="button"><kbd>2</kbd>冲刺</button>
+              <button id="action-attack" class="button action danger" data-action="attack" type="button"><kbd>3</kbd>攻击</button>
+              <button id="action-gather" class="button action" data-action="gather" type="button"><kbd>4</kbd>采集</button>
+              <button id="action-shield" class="button action" data-action="shield" type="button"><kbd>5</kbd>护盾</button>
+              <button id="action-heal" class="button action" data-action="heal" type="button"><kbd>6</kbd>治疗</button>
+              <button id="action-wait" class="button action" data-action="wait" type="button"><kbd>7</kbd>等待</button>
+            </div>
+            <div class="direction-row">
+              <div id="dpad" class="dpad" aria-label="方向选择">
+                <button class="dpad-button north" data-dir="n" type="button" aria-label="向北">▲</button>
+                <button class="dpad-button west" data-dir="w" type="button" aria-label="向西">◀</button>
+                <span class="dpad-core" aria-hidden="true"></span>
+                <button class="dpad-button east" data-dir="e" type="button" aria-label="向东">▶</button>
+                <button class="dpad-button south" data-dir="s" type="button" aria-label="向南">▼</button>
+              </div>
+              <p class="control-help">WASD / 方向键选择方向<br>Esc 取消 · Space 等待</p>
+            </div>
+          </div>
+        </div>
+        <aside class="hud-column">
+          <article class="panel"><div class="panel-heading"><h2>你的状态</h2><span id="self-id" class="tag">YOU</span></div><div id="hud-self" class="hud-self"></div></article>
+          <article class="panel"><div class="panel-heading"><h2>玩家排名</h2><span class="tag">SCORE</span></div><div id="hud-players" class="hud-players"></div></article>
+          <article class="panel event-panel"><div class="panel-heading"><h2>最近事件</h2><span class="tag">LAST 8</span></div><div id="event-log" class="event-log" aria-live="polite"></div></article>
+        </aside>
+      </div>
+    </section>
+
+    <section id="screen-result" class="screen" aria-labelledby="result-title" hidden>
+      <div class="result-hero panel">
+        <p class="eyebrow">MATCH COMPLETE</p>
+        <h1 id="result-title">对局结束</h1>
+        <h2 id="result-winner">—</h2>
+        <p id="result-reason" class="result-reason">—</p>
+        <p id="result-status" class="status-line" aria-live="polite"></p>
+        <div class="result-actions">
+          <button id="again" class="button primary" type="button">再来一局</button>
+          <button id="leave-result" class="button ghost" type="button">离开</button>
+        </div>
+      </div>
+      <div class="result-grid">
+        <article class="panel result-table-panel">
+          <div class="panel-heading"><h2>最终排名</h2><span id="result-turns" class="tag">—</span></div>
+          <div class="table-scroll"><table><thead><tr><th>#</th><th>玩家</th><th>分数</th><th>HP</th><th>伤害</th><th>击杀</th><th>采集</th></tr></thead><tbody id="result-standings"></tbody></table></div>
+        </article>
+        <article id="result-team-panel" class="panel result-table-panel" hidden>
+          <div class="panel-heading"><h2>队伍排名</h2><span class="tag">TEAM</span></div>
+          <div class="table-scroll"><table><thead><tr><th>#</th><th>队伍</th><th>成员</th><th>分数</th><th>存活</th></tr></thead><tbody id="result-team-standings"></tbody></table></div>
+        </article>
+        <article class="panel"><div class="panel-heading"><h2>本局统计</h2><span class="tag">SUMMARY</span></div><div id="result-stats" class="result-stats"></div></article>
+      </div>
+    </section>
+  </main>
+  <footer class="footer">NEON ARENA · 独立静态客户端 · 无外部运行时依赖</footer>
+</body>
+</html>
