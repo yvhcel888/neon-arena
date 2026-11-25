@@ -21,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--tcp-port", type=int, default=7777)
     parser.add_argument("--api-port", type=int, default=8080,
-                        help="reserved for the HTTP API task")
+                        help="start the HTTP API on this port")
     parser.add_argument("--tick-ms", type=int, default=15000)
     parser.add_argument("--min-turn-ms", type=int, default=250)
     parser.add_argument("--turn-limit", type=int, default=80)
