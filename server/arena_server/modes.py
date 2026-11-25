@@ -106,6 +106,101 @@ class KingMode(GameMode):
                    for p in self.engine.players.values())
 
 
+class BountyMode(GameMode):
+    def setup(self):
+        player_ids = sorted(self.engine.players)
+        targets = {player_id: player_ids[(index + 1) % len(player_ids)]
+                   for index, player_id in enumerate(player_ids)}
+        for player in self.engine.players.values():
+            player.bounty_streak = 0
+        return {"target_score": 150, "targets": targets}
+
+    def player_fields(self, player):
+        return {"bounty_target": self.state["targets"].get(player.id),
+                "bounty_streak": player.bounty_streak}
+
+    def damage_multiplier(self, attacker, target):
+        return 2 if self.state["targets"].get(attacker.id) == target.id else 1
+
+    def _target_reward(self, attacker, target):
+        if self.state["targets"].get(attacker.id) != target.id:
+            return self.engine.rules.kill_score
+        return (self.engine.rules.kill_score + 25
+                + min(attacker.bounty_streak, 4) * 5)
+
+    def kill_reward(self, attacker, target):
+        return self._target_reward(attacker, target)
+
+    def _normalize_damage_scores(self, events):
+        # The engine scores the full attack before marking deaths; bounty
+        # damage score is limited to HP actually removed on lethal overkill.
+        damage_by_target = {}
+        for event in events:
+            if event["type"] == "damage" and event["hp_damage"]:
+                damage_by_target.setdefault(event["target"], []).append(event)
+        for target_id, damage_events in damage_by_target.items():
+            hp = (self.engine.players[target_id].hp
+                  + sum(event["hp_damage"] for event in damage_events))
+            for event in damage_events:
+                actual_damage = min(event["hp_damage"], max(0, hp))
+                hp -= actual_damage
+                overkill = event["hp_damage"] - actual_damage
+                if not overkill:
+                    continue
+                attacker = self.engine.players[event["player"]]
+                attacker.score -= (overkill * self.engine.rules.damage_score
+                                   * self.damage_multiplier(
+                                       attacker, self.engine.players[target_id]))
+
+    def after_deaths(self, events):
+        targets = self.state["targets"]
+        self._normalize_damage_scores(events)
+        for event in events:
+            if (event["type"] == "damage"
+                    and targets.get(event["player"]) == event["target"]):
+                event["bounty"] = True
+
+        for event in list(events):
+            if event["type"] != "death" or event["killer"] is None:
+                continue
+            attacker = self.engine.players[event["killer"]]
+            target = self.engine.players[event["player"]]
+            if targets.get(attacker.id) != target.id:
+                continue
+            bonus = self._target_reward(attacker, target)
+            attacker.bounty_streak += 1
+            events.append({"type": "bounty_complete", "player": attacker.id,
+                           "target": target.id, "bonus": bonus,
+                           "streak": attacker.bounty_streak})
+
+    def after_missed(self, events):
+        living = sorted(player.id for player in self.engine.players.values()
+                        if player.alive)
+        for player_id, player in self.engine.players.items():
+            if not player.alive:
+                self.state["targets"][player_id] = None
+                player.bounty_streak = 0
+                continue
+            target = None
+            for offset in range(1, len(living)):
+                candidate = living[(living.index(player_id) + offset)
+                                   % len(living)]
+                if candidate != player_id:
+                    target = candidate
+                    break
+            if self.state["targets"].get(player_id) != target:
+                events.append({"type": "bounty_retarget", "player": player_id,
+                               "target": target})
+            self.state["targets"][player_id] = target
+
+    def on_forfeit(self, player_id, events):
+        self.after_missed(events)
+
+    def score_limit_reached(self):
+        return any(player.score >= self.state["target_score"]
+                   for player in self.engine.players.values())
+
+
 class SurvivalMode(GameMode):
     SHRINK_TURNS = (6, 12, 18, 24, 30)
 
@@ -225,7 +320,8 @@ class TeamMode(GameMode):
 
 def create_game_mode(engine, name):
     classes = {"classic": ClassicMode, "king": KingMode,
-               "survival": SurvivalMode, "team": TeamMode}
+               "survival": SurvivalMode, "team": TeamMode,
+               "bounty": BountyMode}
     if name not in classes:
         raise ValueError(f"unknown mode: {name}")
     mode = classes[name]()

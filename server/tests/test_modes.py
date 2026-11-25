@@ -278,5 +278,77 @@ class SurvivalModeTests(unittest.TestCase):
                       e.last_events)
 
 
+class BountyModeTests(unittest.TestCase):
+    def make(self):
+        e = Engine(Rules(), [("A", "agent"), ("B", "agent"),
+                             ("C", "agent")],
+                   seed=5, map_data=MapData(15, 15, frozenset(), NODE_POINTS),
+                   mode="bounty")
+        for pid, pos in {"P1": (5, 5), "P2": (6, 5),
+                         "P3": (9, 9)}.items():
+            e.players[pid].pos = pos
+            e.players[pid].energy = 50
+        return e
+
+    def test_initial_cycle_and_double_damage_score(self):
+        e = self.make()
+        self.assertEqual(e.mode_state["targets"],
+                         {"P1": "P2", "P2": "P3", "P3": "P1"})
+        e.resolve({"P1": {"type": "attack", "dir": "e"},
+                   "P2": {"type": "wait"}, "P3": {"type": "wait"}})
+        self.assertEqual(e.players["P2"].hp, 78)
+        self.assertEqual(e.players["P1"].score, 44)
+        damage = next(ev for ev in e.last_events if ev["type"] == "damage")
+        self.assertTrue(damage["bounty"])
+
+    def test_target_kill_reward_and_retarget(self):
+        e = self.make()
+        e.players["P2"].hp = 5
+        e.resolve({"P1": {"type": "attack", "dir": "e"},
+                   "P2": {"type": "wait"}, "P3": {"type": "wait"}})
+        self.assertEqual(e.players["P1"].kills, 1)
+        self.assertEqual(e.players["P1"].score, 60)
+        self.assertEqual(e.players["P1"].bounty_streak, 1)
+        self.assertEqual(e.mode_state["targets"]["P1"], "P3")
+        self.assertEqual(e.mode_state["targets"]["P3"], "P1")
+        self.assertIn({"type": "bounty_complete", "player": "P1",
+                       "target": "P2", "bonus": 50, "streak": 1},
+                      e.last_events)
+
+    def test_non_target_kill_has_no_streak_bonus(self):
+        e = self.make()
+        e.players["P2"].pos = (7, 5)
+        e.players["P3"].pos = (6, 5)
+        e.players["P3"].hp = 5
+        e.resolve({"P1": {"type": "attack", "dir": "e"},
+                   "P2": {"type": "wait"}, "P3": {"type": "wait"}})
+        self.assertEqual(e.players["P1"].score, 30)
+        self.assertEqual(e.players["P1"].bounty_streak, 0)
+
+    def test_target_score_limit(self):
+        e = self.make()
+        e.players["P1"].score = 145
+        e.players["P2"].hp = 50
+        e.players["P2"].shield = 17
+        e.resolve({"P1": {"type": "attack", "dir": "e"},
+                   "P2": {"type": "wait"}, "P3": {"type": "wait"}})
+        self.assertEqual(e.players["P1"].score, 155)
+        self.assertEqual(e.end_reason, "score_limit")
+
+    def test_score_limit_includes_scorer_who_dies_with_others_alive(self):
+        e = self.make()
+        e.players["P1"].score = 145
+        e.players["P1"].hp = Rules().attack_damage
+        e.resolve({"P1": {"type": "attack", "dir": "e"},
+                   "P2": {"type": "attack", "dir": "w"},
+                   "P3": {"type": "wait"}})
+        self.assertGreaterEqual(e.players["P1"].score,
+                                e.mode_state["target_score"])
+        self.assertFalse(e.players["P1"].alive)
+        self.assertEqual(sum(p.alive for p in e.players.values()), 2)
+        self.assertTrue(e.finished)
+        self.assertEqual(e.end_reason, "score_limit")
+
+
 if __name__ == "__main__":
     unittest.main()
