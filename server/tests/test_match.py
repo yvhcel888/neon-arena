@@ -43,6 +43,15 @@ class MatchDeadlineTests(unittest.IsolatedAsyncioTestCase):
         )
         return match, participants, server, ends
 
+    async def test_submit_rejects_before_first_turn_opens(self):
+        match, participants, _, _ = self.make_match()
+
+        with self.assertRaises(ActionError) as ctx:
+            match.submit(participants[0], match.engine.turn, {"type": "wait"})
+
+        self.assertEqual(ctx.exception.code, "turn_closed")
+        self.assertEqual(match.pending, {})
+
     async def test_submit_rejects_at_expired_active_deadline(self):
         match, participants, _, _ = self.make_match()
         loop = asyncio.get_running_loop()

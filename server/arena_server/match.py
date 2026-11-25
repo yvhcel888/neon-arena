@@ -25,7 +25,7 @@ class Match:
 
         self.pending: dict[str, dict] = {}
         self.ready = asyncio.Event()
-        self.closed = False
+        self.closed = True
         self.start_payloads: dict[str, dict] = {}
         self.current_views: dict[str, dict] = {}
         self.current_spectator_view: dict | None = None
