@@ -110,12 +110,27 @@ class ClientTests(unittest.TestCase):
 
     def test_connection_failure_backoff_then_clean_exit(self):
         client = ArenaClient("h", 1, "A", Policy(), logger=lambda *_: None)
-        with patch.object(client, "_run_once",
-                          side_effect=[ConnectionError("no"), False]) as once, \
+        client.player_id = "OLD"
+        client.start_payload = {"you": "OLD"}
+        client.expired_actions = [{"turn": 7}]
+        attempts = []
+
+        def run_once():
+            attempts.append((client.player_id, client.start_payload,
+                             client.expired_actions))
+            if len(attempts) == 1:
+                raise ConnectionError("no")
+            return False
+
+        with patch.object(client, "_run_once", side_effect=run_once) as once, \
                 patch("arena_agent.client.time.sleep") as sleep:
             client.run()
         self.assertEqual(once.call_count, 2)
         sleep.assert_called_once_with(1)
+        self.assertEqual(attempts[1], (None, None, []))
+        self.assertIsNone(client.player_id)
+        self.assertIsNone(client.start_payload)
+        self.assertEqual(client.expired_actions, [])
 
     def test_requeue_reconnects_after_end(self):
         class StopLoop(Exception):
@@ -123,13 +138,24 @@ class ClientTests(unittest.TestCase):
 
         client = ArenaClient("h", 1, "A", Policy(), requeue=True,
                              logger=lambda *_: None)
+        client.player_id = "OLD"
+        client.start_payload = {"you": "OLD"}
+        client.expired_actions = [{"turn": 7}]
+        states = []
+
+        def sleep(delay):
+            states.append((client.player_id, client.start_payload,
+                           client.expired_actions))
+            if len(states) == 2:
+                raise StopLoop
+
         with patch.object(client, "_run_once", side_effect=[False, False]) as once, \
-                patch("arena_agent.client.time.sleep",
-                      side_effect=[None, StopLoop]) as sleep:
+                patch("arena_agent.client.time.sleep", side_effect=sleep) as sleep_mock:
             with self.assertRaises(StopLoop):
                 client.run()
         self.assertEqual(once.call_count, 2)
-        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 1])
+        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [1, 1])
+        self.assertEqual(states, [(None, None, []), (None, None, [])])
 
     def test_send_writes_flushes_and_maps_socket_errors(self):
         stream = io.BytesIO()

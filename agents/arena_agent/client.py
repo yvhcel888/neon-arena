@@ -18,6 +18,9 @@ class ArenaClient:
         self.policy = policy
         self.requeue = requeue
         self.logger = logger
+        self._reset_match_state()
+
+    def _reset_match_state(self):
         self.player_id = None
         self.start_payload = None
         self.expired_actions = []
@@ -29,6 +32,7 @@ class ArenaClient:
             try:
                 self._run_once()
             except (ConnectionError, OSError, TimeoutError) as exc:
+                self._reset_match_state()
                 self.logger(f"connection error: {type(exc).__name__}")
                 time.sleep(delay)
                 delay = min(delay * 2, 8)
@@ -36,8 +40,7 @@ class ArenaClient:
             delay = 1
             if not self.requeue:
                 return
-            self.player_id = None
-            self.start_payload = None
+            self._reset_match_state()
             time.sleep(1)
 
     def _run_once(self):
