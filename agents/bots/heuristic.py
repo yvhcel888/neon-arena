@@ -162,6 +162,26 @@ class HeuristicPolicy(Policy):
                 return action
 
         enemies = self._enemies(me, state)
+
+        # The assigned bounty target takes priority over every generic enemy
+        # attack or movement choice, including adjacent non-target enemies.
+        if self.mode == "bounty":
+            target_id = me.get("bounty_target")
+            if not target_id:
+                target_id = (mode_state.get("targets") or {}).get(me.get("id"))
+            assigned = next((enemy for enemy in enemies
+                             if enemy.get("id") == target_id), None)
+            if assigned is not None:
+                direction = adjacent_dir(me.get("pos"), assigned.get("pos"))
+                if direction:
+                    action = take({"type": "attack", "dir": direction})
+                else:
+                    action = take(self._move_toward(
+                        state, me, self._enemy_cells(assigned), allowed,
+                    ))
+                if action:
+                    return action
+
         adjacent = []
         for enemy in enemies:
             direction = adjacent_dir(me.get("pos"), enemy.get("pos"))
@@ -198,20 +218,6 @@ class HeuristicPolicy(Policy):
             if isinstance(node, dict) and node_is_active(node)
             and position(node.get("pos")) is not None
         }
-
-        # Bounty hunting always tries the assigned living target first.
-        if self.mode == "bounty":
-            target_id = me.get("bounty_target")
-            if not target_id:
-                target_id = (mode_state.get("targets") or {}).get(me.get("id"))
-            assigned = next((enemy for enemy in enemies
-                             if enemy.get("id") == target_id), None)
-            if assigned is not None:
-                action = take(self._move_toward(
-                    state, me, self._enemy_cells(assigned), allowed,
-                ))
-                if action:
-                    return action
 
         enemy_goals = set()
         for enemy in enemies:

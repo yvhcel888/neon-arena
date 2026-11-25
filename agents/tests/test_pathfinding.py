@@ -114,6 +114,24 @@ class ModeAwareHeuristicTests(unittest.TestCase):
         action = policy.decide(state([1, 1], others))
         self.assertEqual(action, {"type": "move", "dir": "e"})
 
+    def test_bounty_attacks_adjacent_target_before_other_enemy(self):
+        policy = HeuristicPolicy("balanced")
+        policy.on_start(start("bounty", {"targets": {"P1": "P3"}}))
+        snapshot = state([1, 1], [player("P2", [1, 2]),
+                                  player("P3", [2, 1])])
+        snapshot["players"][0]["bounty_target"] = "P3"
+        self.assertEqual(policy.decide(snapshot),
+                         {"type": "attack", "dir": "e"})
+
+    def test_bounty_moves_toward_target_before_attacking_other_enemy(self):
+        policy = HeuristicPolicy("balanced")
+        policy.on_start(start("bounty", {"targets": {"P1": "P3"}}))
+        snapshot = state([1, 1], [player("P2", [1, 2]),
+                                  player("P3", [3, 1])])
+        snapshot["players"][0]["bounty_target"] = "P3"
+        self.assertEqual(policy.decide(snapshot),
+                         {"type": "move", "dir": "e"})
+
     def test_king_moves_toward_center_zone(self):
         policy = HeuristicPolicy("collector")
         policy.on_start(start("king", {
