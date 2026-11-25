@@ -458,7 +458,8 @@ class Engine:
                                "target": target.id})
                 continue
             shield_damage = min(target.shield, self.rules.attack_damage)
-            hp_damage = self.rules.attack_damage - shield_damage
+            hp_damage = min(self.rules.attack_damage - shield_damage,
+                            max(0, target.hp))
             target.shield -= shield_damage
             target.hp -= hp_damage
             if hp_damage > 0:

@@ -290,6 +290,17 @@ class BountyModeTests(unittest.TestCase):
             e.players[pid].energy = 50
         return e
 
+    def record_kill_reward_scores(self, e):
+        scores = []
+        original_kill_reward = e.mode.kill_reward
+
+        def observe_kill_reward(attacker, target):
+            scores.append(attacker.score)
+            return original_kill_reward(attacker, target)
+
+        e.mode.kill_reward = observe_kill_reward
+        return scores
+
     def test_initial_cycle_and_double_damage_score(self):
         e = self.make()
         self.assertEqual(e.mode_state["targets"],
@@ -304,8 +315,14 @@ class BountyModeTests(unittest.TestCase):
     def test_target_kill_reward_and_retarget(self):
         e = self.make()
         e.players["P2"].hp = 5
+        scores_before_kill_reward = self.record_kill_reward_scores(e)
         e.resolve({"P1": {"type": "attack", "dir": "e"},
                    "P2": {"type": "wait"}, "P3": {"type": "wait"}})
+        damage = next(event for event in e.last_events
+                      if event["type"] == "damage")
+        self.assertEqual(damage["hp_damage"], 5)
+        self.assertEqual(e.players["P1"].damage_dealt, 5)
+        self.assertEqual(scores_before_kill_reward, [10])
         self.assertEqual(e.players["P1"].kills, 1)
         self.assertEqual(e.players["P1"].score, 60)
         self.assertEqual(e.players["P1"].bounty_streak, 1)
@@ -320,8 +337,15 @@ class BountyModeTests(unittest.TestCase):
         e.players["P2"].pos = (7, 5)
         e.players["P3"].pos = (6, 5)
         e.players["P3"].hp = 5
+        scores_before_kill_reward = self.record_kill_reward_scores(e)
         e.resolve({"P1": {"type": "attack", "dir": "e"},
                    "P2": {"type": "wait"}, "P3": {"type": "wait"}})
+        damage = next(event for event in e.last_events
+                      if event["type"] == "damage")
+        self.assertEqual(damage["hp_damage"], 5)
+        self.assertNotIn("bounty", damage)
+        self.assertEqual(e.players["P1"].damage_dealt, 5)
+        self.assertEqual(scores_before_kill_reward, [5])
         self.assertEqual(e.players["P1"].score, 30)
         self.assertEqual(e.players["P1"].bounty_streak, 0)
 

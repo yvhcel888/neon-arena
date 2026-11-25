@@ -131,30 +131,8 @@ class BountyMode(GameMode):
     def kill_reward(self, attacker, target):
         return self._target_reward(attacker, target)
 
-    def _normalize_damage_scores(self, events):
-        # The engine scores the full attack before marking deaths; bounty
-        # damage score is limited to HP actually removed on lethal overkill.
-        damage_by_target = {}
-        for event in events:
-            if event["type"] == "damage" and event["hp_damage"]:
-                damage_by_target.setdefault(event["target"], []).append(event)
-        for target_id, damage_events in damage_by_target.items():
-            hp = (self.engine.players[target_id].hp
-                  + sum(event["hp_damage"] for event in damage_events))
-            for event in damage_events:
-                actual_damage = min(event["hp_damage"], max(0, hp))
-                hp -= actual_damage
-                overkill = event["hp_damage"] - actual_damage
-                if not overkill:
-                    continue
-                attacker = self.engine.players[event["player"]]
-                attacker.score -= (overkill * self.engine.rules.damage_score
-                                   * self.damage_multiplier(
-                                       attacker, self.engine.players[target_id]))
-
     def after_deaths(self, events):
         targets = self.state["targets"]
-        self._normalize_damage_scores(events)
         for event in events:
             if (event["type"] == "damage"
                     and targets.get(event["player"]) == event["target"]):

@@ -136,6 +136,53 @@ class ResourceAndCombatBoundaryTests(unittest.TestCase):
         self.assertIn({"type": "attack", "player": "P1", "dir": "n",
                        "target": None}, e.last_events)
 
+    def test_lethal_overkill_scores_only_actual_hp_damage(self):
+        e = engine()
+        e.players["P2"].hp = 5
+        scores_before_kill_reward = []
+        original_kill_reward = e.mode.kill_reward
+
+        def observe_kill_reward(attacker, target):
+            scores_before_kill_reward.append(attacker.score)
+            return original_kill_reward(attacker, target)
+
+        e.mode.kill_reward = observe_kill_reward
+        e.resolve({"P1": {"type": "attack", "dir": "e"},
+                   "P2": {"type": "wait"}})
+
+        damage = next(event for event in e.last_events
+                      if event["type"] == "damage")
+        self.assertEqual(damage["hp_damage"], 5)
+        self.assertEqual(e.players["P1"].damage_dealt, 5)
+        self.assertEqual(scores_before_kill_reward, [5])
+        self.assertEqual(e.players["P1"].score, 30)
+
+    def test_lethal_overkill_uses_actual_damage_for_kill_attribution(self):
+        e = Engine(Rules(attack_damage=22),
+                   [("A", "agent"), ("B", "agent"), ("C", "agent")],
+                   seed=2, map_data=MapData(15, 15, frozenset(), NODE_POINTS))
+        for player_id in ("P1", "P2", "P3"):
+            e.players[player_id].energy = 50
+        e.players["P1"].pos = (5, 4)
+        e.players["P2"].pos = (5, 6)
+        e.players["P3"].pos = (5, 5)
+        e.players["P3"].hp = 3
+        e.players["P3"].shield = 21
+
+        e.resolve({"P1": {"type": "attack", "dir": "s"},
+                   "P2": {"type": "attack", "dir": "n"},
+                   "P3": {"type": "wait"}})
+
+        damage_events = [event for event in e.last_events
+                         if event["type"] == "damage"]
+        self.assertEqual([event["hp_damage"] for event in damage_events], [1, 2])
+        self.assertEqual(e.players["P1"].kills, 0)
+        self.assertEqual(e.players["P2"].kills, 1)
+        self.assertEqual(e.players["P1"].score, 1)
+        self.assertEqual(e.players["P2"].score, 27)
+        self.assertIn({"type": "death", "player": "P3", "killer": "P2"},
+                      e.last_events)
+
     def test_kill_damage_tie_goes_to_lowest_player_id(self):
         e = Engine(Rules(attack_damage=1), [("C", "agent"), ("A", "agent"),
                                            ("B", "agent")],
