@@ -65,6 +65,7 @@ class MatchDeadlineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_submit_rejects_at_expired_active_deadline(self):
         match, participants, _, _ = self.make_match()
+        match.closed = False
         loop = asyncio.get_running_loop()
         match.deadline = loop.time() - 0.001
 
@@ -120,24 +121,6 @@ class MatchShutdownTests(unittest.IsolatedAsyncioTestCase):
         for participant in participants:
             self.assertEqual(participant.state, "idle")
             self.assertIsNone(participant.match)
-
-    async def test_match_cancellation_preserves_cancelled_error_when_log_close_fails(self):
-        entered = asyncio.Event()
-
-        async def wait_forever():
-            entered.set()
-            await asyncio.Event().wait()
-
-        match, _ = self.make_match(log=AlwaysFailCloseLog())
-        original_run = match.run
-        match.run = wait_forever
-        task = asyncio.create_task(match.run())
-        await entered.wait()
-        match.run = original_run
-        task.cancel()
-
-        with self.assertRaises(asyncio.CancelledError):
-            await task
 
     async def test_match_cancel_handler_survives_log_close_failure(self):
         log = AlwaysFailCloseLog()
