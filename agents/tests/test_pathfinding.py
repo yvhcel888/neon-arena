@@ -3,6 +3,7 @@ import unittest
 from arena_agent.pathfinding import (
     adjacent_dir, bfs_next_step, bfs_next_step_to_any,
 )
+from arena_agent.policy import legal_actions
 from bots.heuristic import HeuristicPolicy
 from bots.random_bot import RandomPolicy
 
@@ -166,7 +167,7 @@ class ModeAwareHeuristicTests(unittest.TestCase):
         snapshot = state([1, 1], [player("P2", [1, 2])])
         snapshot["players"][0]["energy"] = 0
         action = policy.decide(snapshot)
-        self.assertIn(action, ({"type": "wait"}, {"type": "move", "dir": "w"}))
+        self.assertEqual(action, {"type": "wait"})
 
     def test_bounty_falls_back_when_assigned_target_is_dead(self):
         policy = HeuristicPolicy("balanced")
@@ -186,17 +187,10 @@ class RandomPolicyTests(unittest.TestCase):
         snapshot = state([1, 1], [player("P2", [3, 1])], nodes=[{
             "pos": [1, 1], "cooldown": 0, "active": True,
         }])
-        allowed = {
-            ("wait", None), ("move", "n"), ("move", "e"), ("move", "s"),
-            ("move", "w"), ("dash", "n"), ("dash", "e"), ("dash", "s"),
-            ("dash", "w"), ("attack", "n"), ("attack", "e"),
-            ("attack", "s"), ("attack", "w"), ("gather", None),
-            ("shield", None), ("heal", None),
-        }
         for _ in range(40):
             action = first.decide(snapshot)
             self.assertEqual(action, second.decide(snapshot))
-            self.assertIn((action["type"], action.get("dir")), allowed)
+            self.assertIn(action, legal_actions(payload, snapshot, "P1"))
 
     def test_does_not_gather_cooling_node_or_dash_without_energy(self):
         policy = RandomPolicy("Alpha")
