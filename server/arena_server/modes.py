@@ -106,6 +106,48 @@ class KingMode(GameMode):
                    for p in self.engine.players.values())
 
 
+class SurvivalMode(GameMode):
+    SHRINK_TURNS = (6, 12, 18, 24, 30)
+
+    def setup(self):
+        return {"zone": {"min": [1, 1], "max": [13, 13]},
+                "next_shrink_turn": 6,
+                "storm_damage": 12}
+
+    def _in_storm(self, pos):
+        x, y = pos
+        zone = self.state["zone"]
+        return not (zone["min"][0] <= x <= zone["max"][0]
+                    and zone["min"][1] <= y <= zone["max"][1])
+
+    def player_fields(self, player):
+        return {"in_storm": self._in_storm(player.pos)}
+
+    def after_deaths(self, events):
+        turn = self.engine.turn
+        if turn not in self.SHRINK_TURNS:
+            return
+        zone = {"min": [min(self.state["zone"]["min"][0] + 1, 6)] * 2,
+                "max": [max(self.state["zone"]["max"][0] - 1, 8)] * 2}
+        next_shrink_turn = turn + 6 if turn < 30 else None
+        self.state["zone"] = zone
+        self.state["next_shrink_turn"] = next_shrink_turn
+        events.append({"type": "storm_shrink", "zone": zone,
+                       "next_shrink_turn": next_shrink_turn})
+
+        damage = self.state["storm_damage"]
+        for player in self.engine.players.values():
+            if not player.alive or not self._in_storm(player.pos):
+                continue
+            player.hp = max(0, player.hp - damage)
+            events.append({"type": "storm_damage", "player": player.id,
+                           "amount": damage, "hp": player.hp})
+            if player.hp == 0:
+                player.alive = False
+                events.append({"type": "death", "player": player.id,
+                               "killer": None})
+
+
 class TeamMode(GameMode):
     def setup(self):
         if len(self.engine.players) != 4:
@@ -182,7 +224,8 @@ class TeamMode(GameMode):
 
 
 def create_game_mode(engine, name):
-    classes = {"classic": ClassicMode, "king": KingMode, "team": TeamMode}
+    classes = {"classic": ClassicMode, "king": KingMode,
+               "survival": SurvivalMode, "team": TeamMode}
     if name not in classes:
         raise ValueError(f"unknown mode: {name}")
     mode = classes[name]()

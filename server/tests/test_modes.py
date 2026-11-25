@@ -232,5 +232,51 @@ class TeamModeTests(unittest.TestCase):
                          ["team_standings"][0]["id"], "T1")
 
 
+class SurvivalModeTests(unittest.TestCase):
+    def make(self):
+        e = Engine(Rules(), [("A", "agent"), ("B", "agent")], seed=3,
+                   map_data=MapData(15, 15, frozenset(), NODE_POINTS),
+                   mode="survival")
+        e.players["P1"].pos = (7, 7)
+        e.players["P2"].pos = (8, 8)
+        return e
+
+    def test_shrink_schedule(self):
+        e = self.make()
+        expected = {6: (2, 12), 12: (3, 11), 18: (4, 10),
+                    24: (5, 9), 30: (6, 8)}
+        for turn in range(1, 31):
+            e.resolve({"P1": {"type": "wait"}, "P2": {"type": "wait"}})
+            if turn in expected:
+                low, high = expected[turn]
+                self.assertEqual(e.mode_state["zone"],
+                                 {"min": [low, low], "max": [high, high]})
+        self.assertIsNone(e.mode_state["next_shrink_turn"])
+
+    def test_storm_true_damage_ignores_shield(self):
+        e = self.make()
+        e.players["P1"].pos = (1, 1)
+        e.players["P1"].shield = 40
+        for _ in range(5):
+            e.resolve({"P1": {"type": "wait"}, "P2": {"type": "wait"}})
+        e.resolve({"P1": {"type": "wait"}, "P2": {"type": "wait"}})
+        self.assertEqual(e.players["P1"].hp, 88)
+        self.assertEqual(e.players["P1"].shield, 40)
+        self.assertIn({"type": "storm_damage", "player": "P1",
+                       "amount": 12, "hp": 88}, e.last_events)
+        self.assertTrue(e.state_payload()["players"][0]["in_storm"])
+
+    def test_storm_death_has_no_killer_or_score(self):
+        e = self.make()
+        e.players["P1"].pos = (1, 1)
+        e.players["P1"].hp = 5
+        for _ in range(6):
+            e.resolve({"P1": {"type": "wait"}, "P2": {"type": "wait"}})
+        self.assertFalse(e.players["P1"].alive)
+        self.assertEqual(e.players["P2"].score, 0)
+        self.assertIn({"type": "death", "player": "P1", "killer": None},
+                      e.last_events)
+
+
 if __name__ == "__main__":
     unittest.main()
