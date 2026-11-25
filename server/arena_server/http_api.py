@@ -317,7 +317,7 @@ class HttpApi:
             return {}
         try:
             payload = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
             raise ApiError(400, "invalid_json", "body is not valid JSON") from exc
         if not isinstance(payload, dict):
             raise ApiError(400, "invalid_json", "JSON body must be an object")

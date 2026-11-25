@@ -359,6 +359,16 @@ class HttpHarness(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 400)
         self.assertEqual(data["error"]["code"], "invalid_json")
 
+    async def test_deeply_nested_json_is_invalid_without_stack_logging(self):
+        body = (b'{"name":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}")
+        with patch("arena_server.http_api.LOGGER.exception") as log_exception:
+            status, data, _ = await self.request(
+                "POST", "/sessions", raw_body=body,
+            )
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"]["code"], "invalid_json")
+        log_exception.assert_not_called()
+
     async def test_two_waiting_players_expose_next_mode_metadata(self):
         await self.restart(tick_ms=5000, lobby_wait_ms=5000)
         token_a, _ = await self.create_session("A")
