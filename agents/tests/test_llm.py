@@ -2,6 +2,8 @@ import copy
 import io
 import json
 import os
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -202,6 +204,86 @@ class LlmPolicyTests(unittest.TestCase):
             policy.on_start(self.start)
             self.assertEqual(policy.decide(self.state), {"type": "gather"})
         self.assertNotIn("secret-key", "\n".join(output))
+
+    def test_blocking_opener_is_bounded_and_later_turn_does_not_overlap(self):
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+        active = [0]
+        max_active = [0]
+
+        def blocking_opener(request, timeout):
+            calls.append((request, timeout))
+            active[0] += 1
+            max_active[0] = max(max_active[0], active[0])
+            started.set()
+            try:
+                release.wait(2)
+                return completion('{"type":"wait"}')
+            finally:
+                active[0] -= 1
+
+        fallback = FixedFallback({"type": "heal"})
+        policy = LlmPolicy(fallback_policy=fallback, logger=lambda *_: None,
+                           opener=blocking_opener)
+        policy.on_start(self.start)
+        first = dict(self.state, turn=1,
+                     reply_by_ms=int(time.time() * 1000) + 500)
+        second = dict(self.state, turn=2,
+                      reply_by_ms=int(time.time() * 1000) + 1000)
+        try:
+            before = time.monotonic()
+            self.assertEqual(policy.decide(first), {"type": "heal"})
+            first_elapsed = time.monotonic() - before
+            self.assertTrue(started.wait(1))
+
+            before = time.monotonic()
+            self.assertEqual(policy.decide(second), {"type": "heal"})
+            second_elapsed = time.monotonic() - before
+        finally:
+            release.set()
+            worker = getattr(policy, "_request_thread", None)
+            if worker is not None:
+                worker.join(timeout=2)
+
+        self.assertLess(first_elapsed, 0.75)
+        self.assertLess(second_elapsed, 0.25)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(max_active, [1])
+        self.assertEqual(len(fallback.calls), 2)
+
+    def test_busy_policy_without_fallback_waits_immediately(self):
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def blocking_opener(request, timeout):
+            calls.append((request, timeout))
+            started.set()
+            release.wait(2)
+            return completion('{"type":"wait"}')
+
+        policy = LlmPolicy(fallback=False, logger=lambda *_: None,
+                           opener=blocking_opener)
+        policy.on_start(self.start)
+        try:
+            first = dict(self.state, turn=1,
+                         reply_by_ms=int(time.time() * 1000) + 500)
+            second = dict(self.state, turn=2,
+                          reply_by_ms=int(time.time() * 1000) + 1000)
+            self.assertEqual(policy.decide(first), {"type": "wait"})
+            self.assertTrue(started.wait(1))
+            before = time.monotonic()
+            self.assertEqual(policy.decide(second), {"type": "wait"})
+            elapsed = time.monotonic() - before
+        finally:
+            release.set()
+            worker = getattr(policy, "_request_thread", None)
+            if worker is not None:
+                worker.join(timeout=2)
+
+        self.assertLess(elapsed, 0.25)
+        self.assertEqual(len(calls), 1)
 
     def test_action_after_deadline_is_only_recorded_as_expired(self):
         now = [100.0]

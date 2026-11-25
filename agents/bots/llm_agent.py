@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
 import time
 import urllib.request
 
@@ -83,6 +84,8 @@ class LlmPolicy(Policy):
         self.tick_ms = 0
         self.timeout_ms = 0.0
         self.expired_actions = []
+        self._request_lock = threading.Lock()
+        self._request_thread = None
 
     def on_start(self, start):
         self.start_payload = start
@@ -176,27 +179,90 @@ class LlmPolicy(Policy):
         self.logger(f"turn {state.get('turn')} action expired locally")
         return None
 
-    def decide(self, state):
-        deadline = self._deadline(state)
-        now_ms = self.clock() * 1000
-        if now_ms >= deadline:
-            return self._expire(state, self._fallback_action(state))
-        remaining_ms = deadline - now_ms
-        timeout_seconds = max(0.001, min(self.timeout_ms, remaining_ms * 0.9) / 1000)
-        try:
-            text = self._complete(self.build_prompt(state), timeout_seconds)
-            action = parse_action(text)
-            you = state.get("you", self.start_payload.get("you"))
-            if action not in legal_actions(self.start_payload, state, you):
-                action = self._fallback_action(state)
-        except Exception as exc:
-            # Never include response bodies, request headers, or exception text:
-            # an HTTP error may echo an Authorization header.
-            self.logger(f"LLM error: {type(exc).__name__}")
-            action = self._fallback_action(state)
+    def _request_in_flight(self):
+        with self._request_lock:
+            return (self._request_thread is not None
+                    and self._request_thread.is_alive())
+
+    def _finish(self, state, deadline, action):
         if self.clock() * 1000 >= deadline:
             return self._expire(state, action)
         return action
+
+    def decide(self, state):
+        deadline = self._deadline(state)
+        if self.clock() * 1000 >= deadline:
+            return self._expire(state, self._fallback_action(state))
+        if self._request_in_flight():
+            return self._finish(state, deadline, self._fallback_action(state))
+
+        try:
+            prompt = self.build_prompt(state)
+        except Exception as exc:
+            self.logger(f"LLM error: {type(exc).__name__}")
+            return self._finish(state, deadline, self._fallback_action(state))
+
+        remaining_ms = deadline - self.clock() * 1000
+        if remaining_ms <= 0:
+            return self._expire(state, self._fallback_action(state))
+        wait_seconds = min(self.timeout_ms, remaining_ms * 0.9) / 1000
+        if wait_seconds <= 0:
+            return self._finish(state, deadline, self._fallback_action(state))
+
+        finished = threading.Event()
+        result = {}
+
+        def request():
+            try:
+                result["text"] = self._complete(
+                    prompt, max(0.001, wait_seconds),
+                )
+            except BaseException as exc:
+                # Store only the type: HTTP errors can echo credentials.
+                result["error"] = type(exc).__name__
+            finally:
+                with self._request_lock:
+                    if self._request_thread is threading.current_thread():
+                        self._request_thread = None
+                finished.set()
+
+        worker = threading.Thread(target=request, name="neon-arena-llm",
+                                  daemon=True)
+        start_error = None
+        with self._request_lock:
+            busy = (self._request_thread is not None
+                    and self._request_thread.is_alive())
+            if not busy:
+                self._request_thread = worker
+                try:
+                    worker.start()
+                except BaseException as exc:
+                    self._request_thread = None
+                    start_error = type(exc).__name__
+        if busy:
+            return self._finish(state, deadline, self._fallback_action(state))
+        if start_error is not None:
+            self.logger(f"LLM error: {start_error}")
+            return self._finish(state, deadline, self._fallback_action(state))
+
+        if not finished.wait(wait_seconds):
+            # Socket timeouts do not bound a trickling response. The worker is
+            # daemonized and remains tracked so later turns cannot overlap it.
+            self.logger("LLM request exceeded turn budget")
+            action = self._fallback_action(state)
+        elif "error" in result:
+            self.logger(f"LLM error: {result['error']}")
+            action = self._fallback_action(state)
+        else:
+            try:
+                action = parse_action(result.get("text"))
+                you = state.get("you", self.start_payload.get("you"))
+                if action not in legal_actions(self.start_payload, state, you):
+                    action = self._fallback_action(state)
+            except Exception as exc:
+                self.logger(f"LLM error: {type(exc).__name__}")
+                action = self._fallback_action(state)
+        return self._finish(state, deadline, action)
 
 
 def build_parser():
