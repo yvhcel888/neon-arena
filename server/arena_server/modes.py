@@ -126,7 +126,7 @@ class BountyMode(GameMode):
         if self.state["targets"].get(attacker.id) != target.id:
             return self.engine.rules.kill_score
         return (self.engine.rules.kill_score + 25
-                + min(attacker.bounty_streak, 4) * 5)
+                + min(attacker.bounty_streak, 3) * 5)
 
     def kill_reward(self, attacker, target):
         return self._target_reward(attacker, target)

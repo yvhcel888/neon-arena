@@ -332,6 +332,26 @@ class BountyModeTests(unittest.TestCase):
                        "target": "P2", "bonus": 50, "streak": 1},
                       e.last_events)
 
+    def test_target_kill_reward_caps_at_65_from_fourth_kill(self):
+        e = self.make()
+        attacker = e.players["P1"]
+        target = e.players["P2"]
+        for previous_streak, expected_reward in enumerate((50, 55, 60, 65, 65)):
+            with self.subTest(previous_streak=previous_streak):
+                attacker.bounty_streak = previous_streak
+                reward = e.mode.kill_reward(attacker, target)
+                self.assertEqual(reward, expected_reward)
+
+                events = [{"type": "death", "player": target.id,
+                           "killer": attacker.id}]
+                e.mode.after_deaths(events)
+                self.assertEqual(attacker.bounty_streak, previous_streak + 1)
+                self.assertEqual(events[-1], {
+                    "type": "bounty_complete", "player": attacker.id,
+                    "target": target.id, "bonus": expected_reward,
+                    "streak": previous_streak + 1,
+                })
+
     def test_non_target_kill_has_no_streak_bonus(self):
         e = self.make()
         e.players["P2"].pos = (7, 5)
