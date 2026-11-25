@@ -16,7 +16,8 @@ class TcpHarness(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.server = self.make_server()
         self.tcp_port, self.api_port = await self.server.start()
-        self.assertIsNone(self.api_port, "Task 6 must not start HTTP yet")
+        self.assertIsInstance(self.api_port, int)
+        self.assertGreater(self.api_port, 0)
         self.writers = []
 
     def make_server(self, **overrides):
@@ -32,7 +33,8 @@ class TcpHarness(unittest.IsolatedAsyncioTestCase):
         await self.server.stop()
         self.server = self.make_server(**overrides)
         self.tcp_port, self.api_port = await self.server.start()
-        self.assertIsNone(self.api_port)
+        self.assertIsInstance(self.api_port, int)
+        self.assertGreater(self.api_port, 0)
 
     async def asyncTearDown(self):
         for writer in self.writers:
@@ -339,13 +341,14 @@ class TcpHarness(unittest.IsolatedAsyncioTestCase):
             (json.dumps({"type": "ping", "ts": index}) + "\n").encode()
             for index in range(65)
         )
-        writer.write(payload)
-        await writer.drain()
+        with patch("arena_server.tcp_gateway.RATE_PER_SECOND", 0.0):
+            writer.write(payload)
+            await writer.drain()
 
-        async def collect():
-            return [await self.read_json(reader) for _ in range(65)]
+            async def collect():
+                return [await self.read_json(reader) for _ in range(65)]
 
-        messages = await asyncio.wait_for(collect(), 3)
+            messages = await asyncio.wait_for(collect(), 3)
         pongs = sum(msg["type"] == "pong" for msg in messages)
         limited = sum(msg.get("code") == "rate_limited" for msg in messages)
         self.assertGreaterEqual(pongs, 30)
@@ -396,9 +399,9 @@ class TcpHarness(unittest.IsolatedAsyncioTestCase):
             r1, w1 = await self.connect()
             r2, w2 = await self.connect()
             await asyncio.gather(self.join(r1, w1, "A"), self.join(r2, w2, "B"))
+            started = time.monotonic()
             await asyncio.gather(self.read_until(r1, "state"),
                                  self.read_until(r2, "state"))
-            started = time.monotonic()
             ends = await asyncio.gather(self.read_until(r1, "end"),
                                         self.read_until(r2, "end"))
             elapsed = time.monotonic() - started

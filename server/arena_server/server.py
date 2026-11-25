@@ -4,21 +4,27 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from copy import deepcopy
 from datetime import datetime
 import logging
 import random
 import secrets
+import time
 import traceback
 
+from arena_server import __version__
 from arena_server.config import ServerConfig
 from arena_server.engine import Engine
+from arena_server.http_api import HttpApi
 from arena_server.lobby import Lobby
 from arena_server.logging_utils import MatchLog, NullLog
 from arena_server.match import Match
 from arena_server.modes import (
     MODE_DESCRIPTIONS, MODE_LABELS, MODE_MIN_PLAYERS, MODE_ORDER, select_mode,
 )
-from arena_server.protocol import ServerFull
+from arena_server.participants import Participant
+from arena_server.protocol import PROTOCOL, ServerFull
+from arena_server.sessions import SessionManager
 from arena_server.tcp_gateway import TcpGateway
 
 LOGGER = logging.getLogger(__name__)
@@ -44,34 +50,53 @@ class GameServer:
         self.tcp_port: int | None = None
         self.api_port: int | None = None
         self.gateway: TcpGateway | None = None
+        self.http: HttpApi | None = None
+        self.sessions = SessionManager()
+        self._started_at = time.monotonic()
         self._lobby_task: asyncio.Task | None = None
+        self._session_cleanup_task: asyncio.Task | None = None
         self._match_task: asyncio.Task | None = None
         self._last_lobby_signature = None
         self._shutdown_event = asyncio.Event()
         self._started = False
         self._stopped = False
 
-    async def start(self) -> tuple[int, int | None]:
+    async def start(self) -> tuple[int, int]:
         if self._started:
-            return self.tcp_port, None
+            return self.tcp_port, self.api_port
         if self._stopped:
             raise RuntimeError("a stopped GameServer cannot be restarted")
         self.gateway = TcpGateway(self)
+        self.http = HttpApi(self, self.config)
         try:
             self.tcp_port = await self.gateway.start()
+            self.api_port = await self.http.start()
         except Exception:
+            await self.http.stop()
             await self.gateway.stop()
             raise
         self._started = True
         self._lobby_task = asyncio.create_task(self._lobby_loop())
+        self._session_cleanup_task = asyncio.create_task(
+            self._session_cleanup_loop(),
+        )
         LOGGER.info("Agent TCP : %s:%s", self.config.host, self.tcp_port)
-        return self.tcp_port, None
+        LOGGER.info("HTTP API  : http://%s:%s/api/v1",
+                    self.config.host, self.api_port)
+        return self.tcp_port, self.api_port
 
     async def stop(self) -> None:
         if self._stopped:
             return
         self._stopped = True
         self._shutdown_event.set()
+        if self.http is not None:
+            await self.http.stop()
+        if self._session_cleanup_task is not None:
+            self._session_cleanup_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await self._session_cleanup_task
+            self._session_cleanup_task = None
         if self._lobby_task is not None:
             self._lobby_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
@@ -250,6 +275,15 @@ class GameServer:
     async def _on_match_end(self, match: Match) -> None:
         if self.match is not match:
             return
+        ended_at = time.monotonic()
+        for participant in match.participants:
+            session = participant.session
+            if (participant.transport == "http"
+                    and session is not None
+                    and self.sessions.get(session.token) is session):
+                session.ended_match = match.view_for(participant)
+                session.ended_result = deepcopy(match.engine.end_payload())
+                session.ended_at = ended_at
         self.match = None
         for participant in match.participants:
             participant.state = "idle"
@@ -305,6 +339,127 @@ class GameServer:
         participant.match = None
         if changed or active:
             await self.broadcast_lobby()
+
+    def health_payload(self) -> dict:
+        active_players = 0
+        if self.match is not None:
+            active_players = sum(
+                participant not in self.match.detached
+                for participant in self.match.participants
+            )
+        return {
+            "ok": True,
+            "server": "Neon Arena",
+            "version": __version__,
+            "protocol": PROTOCOL,
+            "uptime_s": int(time.monotonic() - self._started_at),
+            "lobby_players": len(self.lobby.waiting),
+            "match_running": self.match is not None,
+            "active_players": active_players,
+            "spectators": len(self.spectators),
+        }
+
+    def rules_payload(self) -> dict:
+        return {
+            "ok": True,
+            "protocol": PROTOCOL,
+            "rules": self.config.rules().to_dict(),
+            "defaults": {
+                "tick_ms": self.config.tick_ms,
+                "min_turn_ms": self.config.min_turn_ms,
+                "turn_limit": self.config.turn_limit,
+                "min_players": self.config.min_players,
+                "max_players": self.config.max_players,
+                "mode": self.config.mode,
+            },
+        }
+
+    async def create_human(self, name: str):
+        if self.client_count() >= self.config.max_clients:
+            raise ServerFull("the server is full")
+        participant = Participant(
+            name=self.unique_name(name), kind="human", transport="http",
+        )
+        session = self.sessions.create(participant)
+        try:
+            await self.add_to_lobby(participant)
+        except Exception:
+            self.sessions.drop(session.token)
+            participant.session = None
+            raise
+        return session, participant
+
+    async def requeue(self, participant):
+        if participant.state != "idle":
+            raise ValueError("only idle participants can requeue")
+        previous = (participant.player_id, participant.state, participant.match)
+        participant.player_id = None
+        participant.state = "lobby"
+        participant.match = None
+        try:
+            await self.add_to_lobby(participant)
+        except Exception:
+            self.lobby.remove(participant)
+            participant.player_id, participant.state, participant.match = previous
+            raise
+        session = participant.session
+        if session is not None:
+            session.ended_result = None
+            session.ended_match = None
+            session.ended_at = None
+        return self.view_for(participant)
+
+    def view_for(self, participant) -> dict:
+        session = participant.session
+        view = {
+            "you": {
+                "id": participant.player_id,
+                "name": participant.name,
+                "kind": participant.kind,
+            },
+            "server": {
+                "version": __version__,
+                "protocol": PROTOCOL,
+                "now_ms": int(time.time() * 1000),
+            },
+            "lobby": None,
+            "match": None,
+            "result": None,
+        }
+        if (session is not None and session.ended_result is not None
+                and participant.state == "idle"):
+            view["mode"] = "ended"
+            view["match"] = deepcopy(session.ended_match)
+            view["result"] = deepcopy(session.ended_result)
+            return view
+        if participant.state == "playing" and participant.match is not None:
+            view["mode"] = "match"
+            view["match"] = participant.match.view_for(participant)
+            return view
+        view["mode"] = "lobby"
+        view["you"]["id"] = None
+        view["lobby"] = self.lobby_view()
+        return view
+
+    async def _cleanup_sessions(self, now: float) -> None:
+        for session in self.sessions.cleanup(now):
+            participant = session.participant
+            self.sessions.drop(session.token)
+            participant.session = None
+            try:
+                await self.remove_participant(participant)
+            except Exception:
+                LOGGER.exception("could not clean up expired HTTP session")
+
+    async def _session_cleanup_loop(self) -> None:
+        while not self._stopped:
+            try:
+                await asyncio.sleep(5)
+                await self._cleanup_sessions(time.monotonic())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("session cleanup loop error")
 
     def unique_name(self, raw: str) -> str:
         used = {participant.name.casefold()
