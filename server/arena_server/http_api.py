@@ -61,6 +61,7 @@ class HttpApi:
         self._server: asyncio.AbstractServer | None = None
         self._handlers: set[asyncio.Task] = set()
         self._writers: set[asyncio.StreamWriter] = set()
+        self._stopping = False
         self._cors_origins = {
             origin.strip() for origin in config.cors_origin.split(",")
             if origin.strip()
@@ -69,8 +70,9 @@ class HttpApi:
     async def start(self) -> int:
         if self._server is not None:
             return self.port
+        self._stopping = False
         self._server = await asyncio.start_server(
-            self._handle_client, self.config.host, self.config.api_port,
+            self._client_connected, self.config.host, self.config.api_port,
             limit=max(MAX_HEADER_BYTES, MAX_BODY_BYTES) + 4,
         )
         sockets = self._server.sockets or []
@@ -78,6 +80,7 @@ class HttpApi:
         return self.port
 
     async def stop(self) -> None:
+        self._stopping = True
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -86,16 +89,27 @@ class HttpApi:
             writer.close()
         current = asyncio.current_task()
         handlers = [task for task in self._handlers if task is not current]
+        for task in handlers:
+            task.cancel()
         if handlers:
             await asyncio.gather(*handlers, return_exceptions=True)
+        for writer in list(self._writers):
+            with suppress(asyncio.CancelledError, Exception):
+                await writer.wait_closed()
         self._writers.clear()
+
+    def _client_connected(self, reader: asyncio.StreamReader,
+                          writer: asyncio.StreamWriter) -> None:
+        if self._stopping:
+            writer.close()
+            return
+        task = asyncio.create_task(self._handle_client(reader, writer))
+        self._handlers.add(task)
+        self._writers.add(writer)
+        task.add_done_callback(self._handlers.discard)
 
     async def _handle_client(self, reader: asyncio.StreamReader,
                              writer: asyncio.StreamWriter) -> None:
-        task = asyncio.current_task()
-        if task is not None:
-            self._handlers.add(task)
-        self._writers.add(writer)
         request = None
         try:
             try:
@@ -135,7 +149,8 @@ class HttpApi:
                 status, payload = 500, self._error(
                     "internal_error", "the server could not process the request",
                 )
-            await self._write_response(writer, status, payload, request)
+            if not self._stopping:
+                await self._write_response(writer, status, payload, request)
         except (ConnectionError, BrokenPipeError, OSError):
             pass
         finally:
@@ -143,8 +158,6 @@ class HttpApi:
             writer.close()
             with suppress(asyncio.CancelledError, Exception):
                 await writer.wait_closed()
-            if task is not None:
-                self._handlers.discard(task)
 
     @staticmethod
     def _request_metadata(raw_headers: bytes) -> HttpRequest:

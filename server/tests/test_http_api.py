@@ -7,7 +7,7 @@ import urllib.request
 from unittest.mock import patch
 
 from arena_server.config import ServerConfig
-from arena_server.http_api import HttpApi
+from arena_server.http_api import HttpApi, HttpRequest
 from arena_server.participants import Participant
 from arena_server.protocol import ServerFull
 from arena_server.server import GameServer
@@ -184,6 +184,45 @@ class HttpHarness(unittest.IsolatedAsyncioTestCase):
                 return view
             await asyncio.sleep(0.02)
         self.fail(f"session did not reach {wanted!r}; last view={view!r}")
+
+    async def test_stop_cancels_delayed_handler_without_late_response(self):
+        entered = asyncio.Event()
+        cancelled = asyncio.Event()
+        release = asyncio.Event()
+        request = HttpRequest("GET", "/api/v1/health", {}, b"")
+
+        async def delayed_request(reader):
+            entered.set()
+            try:
+                await release.wait()
+            finally:
+                await asyncio.sleep(0)
+                cancelled.set()
+            return request
+
+        with patch.object(self.server.http, "_read_request",
+                          new=delayed_request):
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", self.api_port,
+            )
+            self.writers.append(writer)
+            writer.write(b"GET /api/v1/health HTTP/1.1\r\n\r\n")
+            await writer.drain()
+            await asyncio.wait_for(entered.wait(), 1)
+            stop_task = asyncio.create_task(self.server.stop())
+            try:
+                await asyncio.sleep(0)
+                self.assertFalse(stop_task.done())
+                await asyncio.wait_for(cancelled.wait(), 1)
+                await asyncio.wait_for(stop_task, 1)
+                self.assertEqual(await asyncio.wait_for(reader.read(), 1), b"")
+                self.assertFalse(self.server.http._handlers)
+                self.assertFalse(self.server.http._writers)
+            finally:
+                release.set()
+                if not stop_task.done():
+                    stop_task.cancel()
+                await asyncio.gather(stop_task, return_exceptions=True)
 
     async def test_health_rules_cors_and_unknown_path(self):
         status, data, headers = await self.request("GET", "/health")
