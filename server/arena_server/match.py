@@ -31,6 +31,7 @@ class Match:
         self.start_payload: dict | None = None
         self.last_events: list[dict] = []
         self._reply_by_ms: int | None = None
+        self.deadline: float | None = None
         self._finishing = False
 
     def _make_start(self, player_id: str | None) -> dict:
@@ -84,6 +85,7 @@ class Match:
             return
         self._finishing = True
         self.closed = True
+        self.deadline = None
         await self._send_to_participants(end_payload)
         await self.server.broadcast_spectators(deepcopy(end_payload))
         self.log.write(deepcopy(end_payload))
@@ -114,7 +116,7 @@ class Match:
                 self.closed = False
                 self._reply_by_ms = int(time.time() * 1000) + self.tick_ms
                 loop = asyncio.get_running_loop()
-                deadline = loop.time() + self.tick_ms / 1000
+                self.deadline = loop.time() + self.tick_ms / 1000
 
                 for participant in self.participants:
                     state = self._make_state(participant.player_id,
@@ -137,7 +139,7 @@ class Match:
                     if all(player_id in self.pending
                            for player_id in alive_ids):
                         break
-                    remaining = deadline - loop.time()
+                    remaining = self.deadline - loop.time()
                     if remaining <= 0:
                         break
                     try:
@@ -161,6 +163,7 @@ class Match:
                     break
 
                 self.closed = True
+                self.deadline = None
                 actions = {
                     player_id: deepcopy(self.pending[player_id])
                     for player_id in alive_ids if player_id in self.pending
@@ -174,10 +177,12 @@ class Match:
             await self._finish(self.engine.end_payload())
         except asyncio.CancelledError:
             self.closed = True
+            self.deadline = None
             self.log.close()
             raise
         except Exception:
             traceback.print_exc()
+            self.deadline = None
             if not self._finishing:
                 self._refresh_current_views()
                 try:
@@ -191,6 +196,9 @@ class Match:
             raise ActionError("not_in_match", "participant is not in this match")
         if self.closed or self.engine.finished:
             raise ActionError("turn_closed", "the turn is already closed")
+        if (self.deadline is not None
+                and asyncio.get_running_loop().time() >= self.deadline):
+            raise ActionError("turn_closed", "the turn deadline has passed")
         if turn != self.engine.turn:
             raise ActionError(
                 "stale_turn",
