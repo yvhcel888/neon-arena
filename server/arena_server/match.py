@@ -68,18 +68,23 @@ class Match:
         })
         return payload
 
-    def _refresh_current_views(self) -> None:
+    def _refresh_current_views(self, turn: int | None = None,
+                               events_turn: int | None = None) -> None:
         completed = self.engine.completed_turns
+        if turn is None:
+            turn = completed
+        if events_turn is None:
+            events_turn = completed
         for participant in self._delivery_participants():
             player_id = participant.player_id
             view = self._make_state(player_id, self._reply_by_ms)
-            view["turn"] = completed
-            view["events_turn"] = completed
+            view["turn"] = turn
+            view["events_turn"] = events_turn
             view["events"] = deepcopy(self.engine.last_events)
             self.current_views[player_id] = view
         spectator = self._make_state(None, self._reply_by_ms)
-        spectator["turn"] = completed
-        spectator["events_turn"] = completed
+        spectator["turn"] = turn
+        spectator["events_turn"] = events_turn
         spectator["events"] = deepcopy(self.engine.last_events)
         self.current_spectator_view = spectator
 
@@ -196,7 +201,9 @@ class Match:
                 self._refresh_current_views()
                 self.log.write(deepcopy(self.current_spectator_view))
 
-            self._refresh_current_views()
+            self._refresh_current_views(
+                turn=self.engine.turn, events_turn=self.engine.events_turn,
+            )
             await self._finish(self.engine.end_payload())
         except asyncio.CancelledError:
             self.closed = True
@@ -241,13 +248,31 @@ class Match:
         return normalized
 
     async def forfeit(self, participant, reason: str = "forfeit") -> bool:
-        if (participant not in self.participants
-                or participant in self.detached):
+        if participant not in self.participants:
             return False
         changed = self.engine.forfeit(participant.player_id)
         if changed:
             self.last_events = deepcopy(self.engine.last_events)
-            self._refresh_current_views()
+            turn = self.engine.turn
+            self._refresh_current_views(turn=turn, events_turn=turn)
+            for recipient in self._delivery_participants():
+                try:
+                    await self.server.send(
+                        recipient,
+                        deepcopy(self.current_views[recipient.player_id]),
+                    )
+                except Exception:
+                    # The connection read loop owns disconnect cleanup
+                    # and forfeit.
+                    if self.server.config.verbose:
+                        traceback.print_exc()
+            await self.server.broadcast_spectators(
+                deepcopy(self.current_spectator_view),
+            )
+            try:
+                self.log.write(deepcopy(self.current_spectator_view))
+            except Exception:
+                traceback.print_exc()
             self.ready.set()
         return changed
 

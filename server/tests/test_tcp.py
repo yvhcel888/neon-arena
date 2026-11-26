@@ -148,10 +148,163 @@ class TcpHarness(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(
             self.join(r1, w1, "A"), self.join(r2, w2, "B"),
         )
+        await self.read_until(r1, "state")
         w2.close()
+        state = await self.read_until(r1, "state", timeout=5)
+        self.assertEqual(state["turn"], 1)
+        self.assertEqual(state["events_turn"], 1)
+        self.assertEqual(state["events"],
+                         [{"type": "forfeit", "player": "P2"}])
         end = await self.read_until(r1, "end", timeout=5)
         self.assertEqual(end["reason"], "last_standing")
         self.assertEqual(end["winner"]["id"], "P1")
+
+    async def test_third_player_leave_broadcasts_forfeit_and_match_continues(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as log_dir:
+            await self.restart(tick_ms=30000, min_turn_ms=0, turn_limit=3,
+                               lobby_wait_ms=20, no_logs=False,
+                               log_dir=log_dir)
+            r1, w1 = await self.connect()
+            r2, w2 = await self.connect()
+            r3, w3 = await self.connect()
+            await asyncio.gather(
+                self.join(r1, w1, "A"), self.join(r2, w2, "B"),
+                self.join(r3, w3, "C"),
+            )
+            match = self.server.match
+            initial = await asyncio.gather(
+                self.read_until(r1, "state"), self.read_until(r2, "state"),
+                self.read_until(r3, "state"),
+            )
+            self.assertEqual([state["turn"] for state in initial], [1, 1, 1])
+
+            rs, ws = await self.connect()
+            await self.send(ws, {"type": "spectate"})
+            await self.read_until(rs, "spectating")
+            spectator_start = await self.read_until(rs, "start")
+            self.assertNotIn("you", spectator_start)
+            spectator_initial = await self.read_until(rs, "state")
+            self.assertNotIn("you", spectator_initial)
+
+            await asyncio.gather(*(
+                self.send(writer, {
+                    "type": "action", "turn": 1,
+                    "action": {"type": "wait"},
+                })
+                for writer in (w1, w2, w3)
+            ))
+            await asyncio.gather(*(
+                self.read_until(reader, "action_ack")
+                for reader in (r1, r2, r3)
+            ))
+            resolved = await asyncio.gather(
+                self.read_until(r1, "state"), self.read_until(r2, "state"),
+                self.read_until(r3, "state"), self.read_until(rs, "state"),
+            )
+            self.assertEqual([state["turn"] for state in resolved],
+                             [2, 2, 2, 2])
+            self.assertTrue(all(not any(event["type"] == "forfeit"
+                                        for event in state["events"])
+                                for state in resolved))
+
+            await self.send(w3, {"type": "leave"})
+            leaver_messages = []
+            while True:
+                message = await self.read_json(r3)
+                leaver_messages.append(message)
+                if message["type"] == "left":
+                    break
+            self.assertFalse(any(message["type"] in ("state", "end")
+                                 for message in leaver_messages),
+                             "leaver received its own forfeit delivery")
+
+            forfeit_states = await asyncio.gather(
+                self.read_until(r1, "state"), self.read_until(r2, "state"),
+                self.read_until(rs, "state"),
+            )
+            self.assertIs(self.server.match, match)
+            self.assertFalse(match.engine.finished)
+            self.assertEqual(match.engine.completed_turns, 1)
+            for state, player_id in zip(forfeit_states, ("P1", "P2", None)):
+                self.assertEqual(state["type"], "state")
+                self.assertEqual(state["turn"], 2)
+                self.assertEqual(state["events_turn"], 2)
+                self.assertEqual(state["events"],
+                                 [{"type": "forfeit", "player": "P3"}])
+                if player_id is None:
+                    self.assertNotIn("you", state)
+                else:
+                    self.assertEqual(state["you"], player_id)
+                leaver = next(player for player in state["players"]
+                              if player["id"] == "P3")
+                self.assertFalse(leaver["alive"])
+                self.assertTrue(leaver["stats"]["forfeited"])
+
+            await asyncio.gather(*(
+                self.send(writer, {
+                    "type": "action", "turn": 2,
+                    "action": {"type": "wait"},
+                })
+                for writer in (w1, w2)
+            ))
+            await asyncio.gather(
+                self.read_until(r1, "action_ack"),
+                self.read_until(r2, "action_ack"),
+            )
+            post_forfeit = await asyncio.gather(
+                self.read_until(r1, "state"), self.read_until(r2, "state"),
+                self.read_until(rs, "state"),
+            )
+            for state in post_forfeit:
+                self.assertEqual(state["turn"], 3)
+                self.assertEqual(state["events_turn"], 2)
+                self.assertFalse(any(event["type"] == "forfeit"
+                                     for event in state["events"]))
+
+            await asyncio.gather(*(
+                self.send(writer, {
+                    "type": "action", "turn": 3,
+                    "action": {"type": "wait"},
+                })
+                for writer in (w1, w2)
+            ))
+            ends = await asyncio.gather(
+                self.read_until(r1, "end"), self.read_until(r2, "end"),
+                self.read_until(rs, "end"),
+            )
+            self.assertEqual([end["reason"] for end in ends],
+                             ["turn_limit"] * 3)
+            await asyncio.wait_for(self.server._match_task, 1)
+            await self.send(w3, {"type": "ping", "ts": "drained"})
+            drained = []
+            while True:
+                message = await self.read_json(r3)
+                drained.append(message)
+                if message["type"] == "pong":
+                    self.assertEqual(message["ts"], "drained")
+                    break
+            self.assertFalse(any(message["type"] in ("state", "end")
+                                 for message in drained),
+                             "leaver received stale post-forfeit delivery")
+
+            files = list(Path(log_dir).glob("*.jsonl"))
+            self.assertEqual(len(files), 1)
+            records = [json.loads(line) for line in
+                       files[0].read_text(encoding="utf-8").splitlines()]
+            forfeit_records = [
+                record for record in records
+                if record["type"] == "state"
+                and record["events"] == [
+                    {"type": "forfeit", "player": "P3"},
+                ]
+            ]
+            self.assertEqual(len(forfeit_records), 1)
+            self.assertEqual(forfeit_records[0]["turn"], 2)
+            self.assertEqual(forfeit_records[0]["events_turn"], 2)
+            self.assertNotIn("you", forfeit_records[0])
+            self.assertEqual([record["type"] for record in records],
+                             ["start", "state", "state", "state", "state",
+                              "end"])
 
     async def test_rejoined_player_does_not_receive_old_match_delivery(self):
         await self.restart(tick_ms=1000, min_turn_ms=0, turn_limit=2,

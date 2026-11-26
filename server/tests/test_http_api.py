@@ -473,6 +473,83 @@ class HttpHarness(unittest.IsolatedAsyncioTestCase):
                 agent_task.cancel()
                 await asyncio.gather(agent_task, return_exceptions=True)
 
+    async def test_forfeit_http_view_uses_current_turn_for_state_and_events(self):
+        await self.restart(tick_ms=5000, min_turn_ms=0, turn_limit=3,
+                           lobby_wait_ms=5)
+        tokens = []
+        for name in ("A", "B", "C"):
+            token, _ = await self.create_session(name)
+            tokens.append(token)
+        views = await asyncio.gather(*(
+            self.wait_for_mode(token, "match") for token in tokens
+        ))
+        turn = views[0]["match"]["turn"]
+        self.assertEqual(turn, 1)
+        results = await asyncio.gather(*(
+            self.request("POST", "/actions", token=token,
+                         body={"turn": turn, "action": {"type": "wait"}})
+            for token in tokens
+        ))
+        self.assertTrue(all(status == 200 for status, _, _ in results), results)
+
+        async def wait_for_turn(token, wanted):
+            deadline = asyncio.get_running_loop().time() + 3
+            view = None
+            while asyncio.get_running_loop().time() < deadline:
+                status, data, _ = await self.request(
+                    "GET", "/state", token=token,
+                )
+                self.assertEqual(status, 200, data)
+                view = data["view"]
+                if (view["mode"] == "match"
+                        and view["match"]["turn"] == wanted):
+                    return view
+                await asyncio.sleep(0)
+            self.fail(f"session did not reach turn {wanted}; last view={view!r}")
+
+        resolved = await wait_for_turn(tokens[0], 2)
+        match = self.server.match
+        self.assertIsNotNone(match)
+        self.assertEqual(match.engine.completed_turns, 1)
+        self.assertEqual(match.engine.turn, 2)
+
+        status, _, _ = await self.request(
+            "DELETE", "/sessions", token=tokens[2],
+        )
+        self.assertEqual(status, 200)
+        self.assertIs(self.server.match, match)
+        self.assertFalse(match.engine.finished)
+
+        forfeit_views = await asyncio.gather(*(
+            self.request("GET", "/state", token=token)
+            for token in tokens[:2]
+        ))
+        for status, data, _ in forfeit_views:
+            self.assertEqual(status, 200, data)
+            view = data["view"]
+            self.assertEqual(view["mode"], "match")
+            state = view["match"]
+            self.assertEqual(state["turn"], 2)
+            self.assertEqual(state["events_turn"], 2)
+            self.assertEqual(state["events"],
+                             [{"type": "forfeit", "player": "P3"}])
+            leaver = next(player for player in state["players"]
+                          if player["id"] == "P3")
+            self.assertFalse(leaver["alive"])
+            self.assertTrue(leaver["stats"]["forfeited"])
+
+        results = await asyncio.gather(*(
+            self.request("POST", "/actions", token=token,
+                         body={"turn": 2, "action": {"type": "wait"}})
+            for token in tokens[:2]
+        ))
+        self.assertTrue(all(status == 200 for status, _, _ in results), results)
+        post_forfeit = await wait_for_turn(tokens[0], 3)
+        state = post_forfeit["match"]
+        self.assertEqual(state["events_turn"], 2)
+        self.assertFalse(any(event["type"] == "forfeit"
+                             for event in state["events"]))
+
     async def test_ended_session_can_requeue_and_clears_frozen_result(self):
         await self.restart(tick_ms=5000, turn_limit=1, lobby_wait_ms=5)
         token_a, _ = await self.create_session("A")

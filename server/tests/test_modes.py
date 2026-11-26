@@ -179,6 +179,27 @@ class TeamModeTests(unittest.TestCase):
         self.assertFalse(any(event["type"] == "damage"
                              for event in e.last_events))
 
+    def test_friendly_fire_leaves_damage_dealt_and_kills_unchanged(self):
+        e = self.make()
+        e.players["P2"].pos = (6, 5)
+        e.players["P2"].hp = 5
+        e.players["P3"].pos = (8, 5)
+        e.players["P1"].damage_dealt = 7
+        e.players["P1"].kills = 2
+        e.resolve({"P1": {"type": "attack", "dir": "e"},
+                   "P2": {"type": "wait"}, "P3": {"type": "wait"},
+                   "P4": {"type": "wait"}})
+
+        self.assertEqual(e.players["P1"].damage_dealt, 7)
+        self.assertEqual(e.players["P1"].kills, 2)
+        self.assertEqual(e.players["P1"].score, 0)
+        self.assertTrue(e.players["P2"].alive)
+        self.assertEqual(e.players["P2"].hp, 5)
+        self.assertIn({"type": "friendly_blocked", "player": "P1",
+                       "target": "P2"}, e.last_events)
+        self.assertFalse(any(event["type"] in ("damage", "death")
+                             for event in e.last_events))
+
     def test_enemy_damage_scores_and_team_total_updates(self):
         e = self.make()
         e.resolve({"P1": {"type": "attack", "dir": "e"},
@@ -201,6 +222,64 @@ class TeamModeTests(unittest.TestCase):
                          {"id": "T1", "name": "Team A", "kind": "team",
                           "members": ["P1", "P2"]})
         self.assertEqual(len(payload["team_standings"]), 2)
+
+    def test_whole_team_elimination_through_combat(self):
+        e = self.make()
+        e.players["P3"].hp = Rules().attack_damage
+        e.players["P4"].pos = (5, 8)
+        e.players["P4"].hp = Rules().attack_damage
+
+        e.resolve({
+            "P1": {"type": "attack", "dir": "e"},
+            "P2": {"type": "attack", "dir": "s"},
+            "P3": {"type": "wait"},
+            "P4": {"type": "wait"},
+        })
+
+        self.assertFalse(e.players["P3"].alive)
+        self.assertFalse(e.players["P4"].alive)
+        self.assertTrue(e.players["P1"].alive)
+        self.assertTrue(e.players["P2"].alive)
+        self.assertIn({"type": "death", "player": "P3", "killer": "P1"},
+                      e.last_events)
+        self.assertIn({"type": "death", "player": "P4", "killer": "P2"},
+                      e.last_events)
+        teams = {row["id"]: row for row in e.mode_state["teams"]}
+        self.assertEqual(teams["T1"]["alive"], 2)
+        self.assertEqual(teams["T2"]["alive"], 0)
+        self.assertTrue(e.finished)
+        self.assertEqual(e.end_reason, "last_standing")
+        self.assertEqual(e.end_payload()["winner"],
+                         {"id": "T1", "name": "Team A", "kind": "team",
+                          "members": ["P1", "P2"]})
+
+    def test_team_mutual_destruction_uses_team_tiebreaker_winner(self):
+        e = self.make()
+        for pid, pos in {"P1": (5, 5), "P3": (6, 5),
+                         "P2": (5, 6), "P4": (6, 6)}.items():
+            e.players[pid].pos = pos
+            e.players[pid].hp = Rules().attack_damage
+
+        e.resolve({
+            "P1": {"type": "attack", "dir": "e"},
+            "P3": {"type": "attack", "dir": "w"},
+            "P2": {"type": "attack", "dir": "e"},
+            "P4": {"type": "attack", "dir": "w"},
+        })
+
+        self.assertTrue(all(not player.alive
+                            for player in e.players.values()))
+        self.assertEqual({row["id"]: row["alive"]
+                          for row in e.mode_state["teams"]},
+                         {"T1": 0, "T2": 0})
+        self.assertTrue(e.finished)
+        self.assertEqual(e.end_reason, "mutual_destruction")
+        payload = e.end_payload()
+        self.assertEqual(payload["winner"],
+                         {"id": "T1", "name": "Team A", "kind": "team",
+                          "members": ["P1", "P2"]})
+        self.assertEqual([row["id"] for row in payload["team_standings"]],
+                         ["T1", "T2"])
 
     def test_team_requires_exactly_four_players(self):
         for count in (2, 3):
@@ -252,6 +331,113 @@ class SurvivalModeTests(unittest.TestCase):
                 self.assertEqual(e.mode_state["zone"],
                                  {"min": [low, low], "max": [high, high]})
         self.assertIsNone(e.mode_state["next_shrink_turn"])
+
+    def test_storm_shrink_exact_payload_order_and_intermediate_next_turn(self):
+        e = self.make()
+        e.players["P1"].pos = (1, 1)
+        e.players["P2"].pos = (7, 7)
+        actions = {"P1": {"type": "wait"}, "P2": {"type": "wait"}}
+
+        for _ in range(5):
+            e.resolve(actions)
+        self.assertEqual(e.last_events, [])
+        e.resolve(actions)
+
+        zone = {"min": [2, 2], "max": [12, 12]}
+        self.assertEqual(e.last_events, [
+            {"type": "storm_shrink", "zone": zone,
+             "next_shrink_turn": 12},
+            {"type": "storm_damage", "player": "P1",
+             "amount": 12, "hp": 88},
+        ])
+        self.assertEqual(e.mode_state["zone"], zone)
+        self.assertEqual(e.mode_state["next_shrink_turn"], 12)
+        self.assertEqual(e.state_payload()["mode_state"], e.mode_state)
+
+        for _ in range(6):
+            e.resolve(actions)
+        zone = {"min": [3, 3], "max": [11, 11]}
+        self.assertEqual(e.last_events, [
+            {"type": "storm_shrink", "zone": zone,
+             "next_shrink_turn": 18},
+            {"type": "storm_damage", "player": "P1",
+             "amount": 12, "hp": 76},
+        ])
+        self.assertEqual(e.mode_state["zone"], zone)
+        self.assertEqual(e.mode_state["next_shrink_turn"], 18)
+        self.assertEqual(e.state_payload()["mode_state"], e.mode_state)
+
+    def test_movement_into_storm_is_allowed_and_serialized(self):
+        e = self.make()
+        e.players["P1"].pos = (2, 7)
+        e.players["P2"].pos = (7, 7)
+        actions = {"P1": {"type": "wait"}, "P2": {"type": "wait"}}
+        for _ in range(6):
+            e.resolve(actions)
+        self.assertEqual(e.mode_state["zone"],
+                         {"min": [2, 2], "max": [12, 12]})
+        move = {"type": "move", "dir": "w"}
+        self.assertEqual(e.validate_action("P1", move, e.turn), move)
+
+        e.resolve({"P1": move, "P2": {"type": "wait"}})
+
+        self.assertEqual(e.players["P1"].pos, (1, 7))
+        self.assertEqual(e.players["P1"].hp, 100)
+        self.assertEqual(e.last_events, [
+            {"type": "move", "player": "P1", "from": [2, 7], "to": [1, 7]},
+        ])
+        players = {row["id"]: row for row in e.state_payload()["players"]}
+        self.assertTrue(players["P1"]["in_storm"])
+        self.assertFalse(players["P2"]["in_storm"])
+
+    def test_safe_zone_boundaries_are_inclusive(self):
+        e = self.make()
+        actions = {"P1": {"type": "wait"}, "P2": {"type": "wait"}}
+        for _ in range(6):
+            e.resolve(actions)
+        self.assertEqual(e.mode_state["zone"],
+                         {"min": [2, 2], "max": [12, 12]})
+        cases = (
+            ((2, 2), False),
+            ((2, 12), False),
+            ((12, 2), False),
+            ((12, 12), False),
+            ((7, 7), False),
+            ((1, 7), True),
+            ((13, 7), True),
+            ((7, 1), True),
+            ((7, 13), True),
+        )
+        for pos, in_storm in cases:
+            with self.subTest(pos=pos):
+                e.players["P1"].pos = pos
+                player = next(row for row in e.state_payload()["players"]
+                              if row["id"] == "P1")
+                self.assertEqual(player["in_storm"], in_storm)
+
+    def test_storm_damage_preserves_victim_score_and_attacker_damage_dealt(self):
+        e = self.make()
+        e.players["P1"].pos = (1, 1)
+        e.players["P1"].score = 17
+        e.players["P2"].pos = (2, 1)
+        e.players["P2"].energy = 50
+        e.players["P2"].damage_dealt = 9
+        e.resolve({"P1": {"type": "wait"},
+                   "P2": {"type": "attack", "dir": "w"}})
+        self.assertEqual(e.players["P1"].hp, 78)
+        self.assertEqual(e.players["P2"].damage_dealt, 31)
+
+        actions = {"P1": {"type": "wait"}, "P2": {"type": "wait"}}
+        for _ in range(5):
+            e.resolve(actions)
+
+        self.assertEqual(e.players["P1"].hp, 66)
+        self.assertEqual(e.players["P1"].score, 17)
+        self.assertEqual(e.players["P2"].damage_dealt, 31)
+        self.assertEqual(e.players["P2"].kills, 0)
+        self.assertEqual(e.players["P2"].score, 22)
+        self.assertIn({"type": "storm_damage", "player": "P1",
+                       "amount": 12, "hp": 66}, e.last_events)
 
     def test_storm_true_damage_ignores_shield(self):
         e = self.make()
