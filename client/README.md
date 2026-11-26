@@ -4,7 +4,7 @@
 
 ## 快速开始
 
-需要 Python 3.10+ 和现代浏览器。
+需要 Python 3.10+ 和现代浏览器；运行行为回归测试另需 Node.js 18+，客户端运行时不需要 Node.js。
 
 ```powershell
 cd D:\NeonArena\client
@@ -76,6 +76,9 @@ python -m arena_server --host 127.0.0.1 --mode king --tick-ms 15000 --turn-limit
 ```powershell
 cd D:\NeonArena\client
 python -m unittest discover -s tests -v
+node --test
 ```
 
 静态测试覆盖必需文件、零外链、`textContent` 约束、四个页面与可访问性、Canvas/操作/轮询契约、五种模式渲染钩子、响应式与减少动画样式，以及 launcher 的标准库和只读边界。运行时测试通过子进程启动 launcher，验证三个公开路由、HEAD、私密/遍历/API 路径拒绝、POST 不支持、端口占用错误退出，以及 Windows 兼容的进程终止与等待清理。
+
+Node 内置测试运行 `tests/app.test.js`，通过轻量 DOM 与可延迟的 fetch 执行真实 `app.js`，覆盖重复连接、服务器切换及 token 保留、旧会话响应/401、跨回合动作响应、Leave/Again 互斥与轮询竞态，以及大厅倒计时进度递减。

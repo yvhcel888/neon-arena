@@ -14,7 +14,7 @@
     classic: "最后存活或最高分获胜",
     king: "留在中心区域，连续占领获得更多分数",
     team: "两队共享积分，队友之间不会受伤",
-    survival: "安全区逐步收缩，区外每回合受到风暴伤害",
+    survival: "安全区逐步收缩，第 6/12/18/24/30 回合收缩后，区外玩家受到 12 点真实 HP 伤害",
     bounty: "猎杀 assigned target 可获得双倍伤害分与赏金奖励",
   };
   const PLAYER_COLORS = ["#2de2e6", "#ff4fd8", "#8dff57", "#ffc857"];
@@ -44,6 +44,9 @@
     server: "",
     token: "",
     view: null,
+    sessionGeneration: 0,
+    pollRequestId: 0,
+    submissionId: 0,
     pollTimer: null,
     pollInFlight: false,
     pollAgain: false,
@@ -52,9 +55,12 @@
     clockOffset: 0,
     submitted: false,
     submitting: false,
+    connecting: false,
+    sessionTransition: null,
     notice: "",
     lastMatchId: null,
     lastTurn: null,
+    lobbyCountdownTotalMs: null,
     clockTimer: null,
     boardFrame: null,
   };
@@ -184,8 +190,17 @@
     }
   }
 
-  function currentClient() { return new ApiClient(state.server, state.token); }
   function currentMatch() { return state.view && state.view.mode === "match" ? state.view.match : null; }
+  function sessionIsCurrent(generation, server, token) {
+    return state.sessionGeneration === generation && state.server === server && state.token === token;
+  }
+  function resetTurnState() {
+    state.submissionId += 1;
+    state.submitted = false;
+    state.submitting = false;
+    state.selectedAction = null;
+    state.notice = "";
+  }
   function selfPlayer(match = currentMatch()) {
     if (!match || !state.view) return null;
     const youId = match.you || (state.view.you && state.view.you.id);
@@ -275,16 +290,32 @@
     const available = availability(match);
     if (!available.canAct || !available[type] || state.submitting) return;
     const action = dir ? { type, dir } : { type };
+    const submission = {
+      id: ++state.submissionId,
+      generation: state.sessionGeneration,
+      server: state.server,
+      token: state.token,
+      matchId: match.match_id,
+      turn: match.turn,
+    };
+    const isCurrent = () => {
+      const active = currentMatch();
+      return sessionIsCurrent(submission.generation, submission.server, submission.token)
+        && state.submissionId === submission.id
+        && Boolean(active && active.match_id === submission.matchId && active.turn === submission.turn);
+    };
     state.submitting = true;
     state.notice = "提交中…";
     renderActionState();
     try {
-      await currentClient().action(match.turn, action);
+      await new ApiClient(submission.server, submission.token).action(submission.turn, action);
+      if (!isCurrent()) return;
       state.submitted = true;
       state.selectedAction = null;
       state.notice = "已提交，等待其他玩家";
       state.backoff = 800;
     } catch (error) {
+      if (!isCurrent()) return;
       if (error instanceof ApiError && (error.status === 401 || error.code === "unauthorized")) {
         invalidateSession("会话已失效，请重新加入");
         return;
@@ -304,8 +335,10 @@
         pollState(true);
       }
     } finally {
-      state.submitting = false;
-      renderActionState();
+      if (state.submissionId === submission.id) {
+        state.submitting = false;
+        renderActionState();
+      }
     }
   }
 
@@ -372,7 +405,7 @@
       case "forfeit": return `${own(event.player)} 离开或超时判负`;
       case "hill_score": return `${own(event.player)} 占领据点 +${event.points} 分（连续 ${event.streak} 回合）`;
       case "storm_shrink": return `安全区收缩至 (${event.zone.min[0]},${event.zone.min[1]})–(${event.zone.max[0]},${event.zone.max[1]})`;
-      case "storm_damage": return `${own(event.player)} 受到 ${event.amount} 点风暴伤害`;
+      case "storm_damage": return `${own(event.player)} 因位于安全区外受到 ${event.amount} 点真实 HP 风暴伤害`;
       case "bounty_complete": return `${own(event.player)} 完成赏金猎杀，获得 ${event.bonus} 分（连杀 ${event.streak}）`;
       case "bounty_retarget": return `${own(event.player)} 的新目标是 ${own(event.target)}`;
       case "friendly_blocked": return `${own(event.player)} 的攻击被队友 ${own(event.target)} 免疫`;
@@ -461,7 +494,7 @@
       case "survival":
         hud.appendChild(modeChip("安全区", zoneText(modeState.zone)));
         hud.appendChild(modeChip("下次收缩", modeState.next_shrink_turn ? `第 ${modeState.next_shrink_turn} 回合` : "已最终收缩"));
-        hud.appendChild(modeChip("风暴伤害", modeState.storm_damage || 0));
+        hud.appendChild(modeChip("收缩时风暴伤害", `${modeState.storm_damage || 0} 真实 HP`));
         hud.appendChild(modeChip("状态", player && player.in_storm ? "你在风暴中" : "你在安全区", Boolean(player && player.in_storm)));
         break;
       case "team": {
@@ -502,9 +535,20 @@
     setText("lobby-mode-description", lobby.mode_description || MODE_HINTS[lobby.mode] || "服务器正在选择下一局模式");
     const count = Array.isArray(lobby.players) ? lobby.players.length : 0;
     setText("lobby-count", `${count} / ${lobby.max_players || 4} 人`);
-    const seconds = lobby.starts_in_ms === null || lobby.starts_in_ms === undefined ? null : Math.max(0, Math.ceil(lobby.starts_in_ms / 1000));
+    const hasCountdown = lobby.starts_in_ms !== null && lobby.starts_in_ms !== undefined && Number.isFinite(Number(lobby.starts_in_ms));
+    const remaining = hasCountdown ? Math.max(0, Number(lobby.starts_in_ms)) : null;
+    const seconds = remaining === null ? null : Math.ceil(remaining / 1000);
     setText("lobby-countdown", seconds === null ? `还需 ${Math.max(0, (lobby.min_players || 2) - count)} 人` : `${seconds} 秒后开局`);
-    $("lobby-progress").style.setProperty("--progress", seconds === null ? "0" : "1");
+    if (remaining === null) {
+      state.lobbyCountdownTotalMs = null;
+    } else {
+      if (state.lobbyCountdownTotalMs === null || remaining > state.lobbyCountdownTotalMs) state.lobbyCountdownTotalMs = remaining;
+      state.lobbyCountdownTotalMs = Math.max(1, state.lobbyCountdownTotalMs);
+    }
+    const progress = remaining === null || state.lobbyCountdownTotalMs === null
+      ? 0
+      : Math.max(0, Math.min(1, remaining / state.lobbyCountdownTotalMs));
+    $("lobby-progress").style.setProperty("--progress", String(progress));
     clear($("lobby-players"));
     for (const player of lobby.players || []) {
       const item = makeElement("li");
@@ -582,16 +626,15 @@
   function applyView(view) {
     if (!view || typeof view.mode !== "string") throw new ApiError(0, "invalid_response", "服务器返回了无效状态视图");
     if (view.server && Number.isFinite(view.server.now_ms)) state.clockOffset = view.server.now_ms - Date.now();
+    const previousMode = state.view ? state.view.mode : null;
     state.view = view;
     state.backoff = 800;
     if (view.mode === "match" && view.match) {
       const match = view.match;
       const newTurn = match.match_id !== state.lastMatchId || match.turn !== state.lastTurn;
       if (newTurn) {
+        resetTurnState();
         state.submitted = Boolean(match.submitted);
-        state.submitting = false;
-        state.selectedAction = null;
-        state.notice = "";
         state.lastMatchId = match.match_id;
         state.lastTurn = match.turn;
       } else if (match.submitted) {
@@ -600,19 +643,16 @@
       showScreen("screen-game");
       renderGame(match);
     } else if (view.mode === "lobby" && view.lobby) {
+      if (previousMode !== "lobby") state.lobbyCountdownTotalMs = null;
+      resetTurnState();
       state.lastMatchId = null;
       state.lastTurn = null;
-      state.submitted = false;
-      state.selectedAction = null;
-      state.notice = "";
       showScreen("screen-lobby");
       renderLobby(view.lobby);
     } else if (view.mode === "ended" && view.result) {
+      resetTurnState();
       state.lastMatchId = null;
       state.lastTurn = null;
-      state.submitted = false;
-      state.selectedAction = null;
-      state.notice = "";
       showScreen("screen-result");
       renderResult(view.result, view.match);
     } else {
@@ -637,7 +677,7 @@
   }
 
   async function pollState(force = false) {
-    if (!state.token) return;
+    if (!state.token || state.connecting || state.sessionTransition) return;
     if (state.pollInFlight) {
       if (force) state.pollAgain = true;
       return;
@@ -646,10 +686,16 @@
       clearTimeout(state.pollTimer);
       state.pollTimer = null;
     }
+    const requestId = ++state.pollRequestId;
+    const generation = state.sessionGeneration;
+    const server = state.server;
+    const token = state.token;
+    const isCurrent = () => requestId === state.pollRequestId && sessionIsCurrent(generation, server, token);
     state.pollInFlight = true;
     let delay = pollDelay();
     try {
-      const data = await currentClient().state();
+      const data = await new ApiClient(server, token).state();
+      if (!isCurrent()) return;
       applyView(data.view);
       state.backoff = 800;
       setConnection("已连接", "online");
@@ -658,6 +704,7 @@
         renderActionState();
       }
     } catch (error) {
+      if (!isCurrent()) return;
       if (error instanceof ApiError && error.status === 401) {
         invalidateSession("会话已失效，请重新加入");
         return;
@@ -672,10 +719,14 @@
       state.backoff = Math.min(state.backoff * 2, 5000);
       setConnection("重连中", "warning");
     } finally {
-      state.pollInFlight = false;
-      const immediate = state.pollAgain;
-      state.pollAgain = false;
-      if (state.token) schedulePoll(immediate ? 0 : delay);
+      if (requestId === state.pollRequestId) {
+        state.pollInFlight = false;
+        const immediate = state.pollAgain;
+        state.pollAgain = false;
+        if (sessionIsCurrent(generation, server, token) && !state.connecting && !state.sessionTransition) {
+          schedulePoll(immediate ? 0 : delay);
+        }
+      }
     }
   }
 
@@ -700,10 +751,14 @@
   function stopPolling() {
     if (state.pollTimer !== null) clearTimeout(state.pollTimer);
     state.pollTimer = null;
+    state.pollRequestId += 1;
+    state.pollInFlight = false;
     state.pollAgain = false;
   }
 
   function invalidateSession(message) {
+    state.sessionGeneration += 1;
+    state.submissionId += 1;
     if (state.server) storageRemove(tokenKey(state.server));
     state.token = "";
     state.view = null;
@@ -713,6 +768,9 @@
     state.notice = "";
     state.lastMatchId = null;
     state.lastTurn = null;
+    state.lobbyCountdownTotalMs = null;
+    state.connecting = false;
+    state.sessionTransition = null;
     stopPolling();
     stopBoardLoop();
     stopClock();
@@ -724,42 +782,90 @@
 
   async function handleConnect(event) {
     event.preventDefault();
+    if (state.connecting) return;
     const button = $("connect");
+    state.connecting = true;
     button.disabled = true;
     setText("connect-error", "");
     setText("health-status", "健康检查中…");
-    let server;
+    let generation = null;
+    let server = "";
+    let token = "";
     try {
       server = normalizeServer($("server").value);
-      if (state.server && state.server !== server) storageRemove(tokenKey(state.server));
+      token = storageGet(tokenKey(server));
+      stopPolling();
+      generation = ++state.sessionGeneration;
+      resetTurnState();
       state.server = server;
+      state.token = token;
+      state.view = null;
+      state.lastMatchId = null;
+      state.lastTurn = null;
+      state.lobbyCountdownTotalMs = null;
+      state.clockOffset = 0;
+      state.backoff = 800;
       storageSet("neon.server", server);
-      state.token = storageGet(tokenKey(server));
-      const client = new ApiClient(server, state.token);
+      const client = new ApiClient(server, token);
       const health = await client.health();
+      if (!sessionIsCurrent(generation, server, token)) return;
       if (health.protocol !== PROTOCOL) throw new ApiError(0, "protocol_mismatch", `协议不兼容：客户端 ${PROTOCOL}，服务器 ${health.protocol}`);
       setText("health-status", `${health.server || "Neon Arena"} ${health.version || ""} · 协议 ${health.protocol} · 健康检查成功`);
       const name = $("name").value.trim();
       let data;
-      if (state.token) {
+      if (token) {
         data = await client.state();
       } else {
         if (!name) throw new ApiError(400, "invalid_name", "请输入玩家名称");
         data = await client.createSession(name);
       }
-      state.token = data.token || state.token;
-      if (state.token) storageSet(tokenKey(server), state.token);
+      if (!sessionIsCurrent(generation, server, token)) return;
+      token = data.token || token;
+      state.token = token;
+      if (token) storageSet(tokenKey(server), token);
       applyView(data.view);
       startPolling();
     } catch (error) {
+      if (generation !== null && !sessionIsCurrent(generation, server, token)) return;
+      state.connecting = false;
       const message = error instanceof ApiError ? error.message : error.message;
-      setText("health-status", state.token ? "重连中…" : "连接失败");
+      setText("health-status", token ? "重连中…" : "连接失败");
       setText("connect-error", message);
-      setConnection(state.token ? "重连中" : "连接失败", state.token ? "warning" : "error");
-      if (state.token) startPolling();
+      setConnection(token ? "重连中" : "连接失败", token ? "warning" : "error");
+      if (token && error instanceof ApiError && error.status === 401) {
+        invalidateSession("会话已失效，请重新加入");
+      } else if (token) {
+        startPolling();
+      }
     } finally {
+      state.connecting = false;
       button.disabled = false;
     }
+  }
+
+  function transitionButtons() {
+    return [$("leave-lobby"), $("leave-result"), $("again")];
+  }
+
+  function setTransitionButtonsDisabled(disabled) {
+    for (const button of transitionButtons()) button.disabled = disabled;
+  }
+
+  function beginSessionTransition(type) {
+    if (state.sessionTransition !== null) return null;
+    state.sessionTransition = type;
+    const generation = ++state.sessionGeneration;
+    state.submissionId += 1;
+    state.submitting = false;
+    stopPolling();
+    setTransitionButtonsDisabled(true);
+    return generation;
+  }
+
+  function finishSessionTransition() {
+    state.sessionTransition = null;
+    setTransitionButtonsDisabled(false);
+    if (state.token) startPolling();
   }
 
   async function handleLeave() {
@@ -767,42 +873,53 @@
       invalidateSession();
       return;
     }
-    const buttons = [$("leave-lobby"), $("leave-result")];
-    buttons.forEach((button) => { button.disabled = true; });
+    const generation = beginSessionTransition("leave");
+    if (generation === null) return;
+    const server = state.server;
+    const token = state.token;
+    const isCurrent = () => sessionIsCurrent(generation, server, token);
     try {
-      await currentClient().leave();
+      await new ApiClient(server, token).leave();
+      if (!isCurrent()) return;
       invalidateSession("已离开服务器");
     } catch (error) {
+      if (!isCurrent()) return;
       if (error instanceof ApiError && error.status === 401) {
         invalidateSession("会话已失效，请重新加入");
       } else {
         setText("result-status", error.message || "离开失败，请重试");
         setConnection("重连中", "warning");
-        startPolling();
       }
     } finally {
-      buttons.forEach((button) => { button.disabled = false; });
+      finishSessionTransition();
     }
   }
 
   async function handleAgain() {
     if (!state.token || !state.view || !state.view.you) return;
-    $("again").disabled = true;
+    const generation = beginSessionTransition("again");
+    if (generation === null) return;
+    const server = state.server;
+    let token = state.token;
+    const name = state.view.you.name;
+    const isCurrent = () => sessionIsCurrent(generation, server, token);
     setText("result-status", "正在重新排队…");
     try {
-      const data = await currentClient().createSession(state.view.you.name);
-      state.token = data.token || state.token;
-      storageSet(tokenKey(state.server), state.token);
+      const data = await new ApiClient(server, token).createSession(name);
+      if (!isCurrent()) return;
+      token = data.token || token;
+      state.token = token;
+      storageSet(tokenKey(server), token);
       applyView(data.view);
-      startPolling();
     } catch (error) {
+      if (!isCurrent()) return;
       if (error instanceof ApiError && error.status === 401) {
         invalidateSession("会话已失效，请重新加入");
         return;
       }
       setText("result-status", error.message || "重新排队失败，请重试");
     } finally {
-      $("again").disabled = false;
+      finishSessionTransition();
     }
   }
 
