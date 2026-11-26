@@ -3,7 +3,6 @@ import unittest
 from arena_agent.pathfinding import (
     adjacent_dir, bfs_next_step, bfs_next_step_to_any,
 )
-from arena_agent.policy import legal_actions
 from bots.heuristic import HeuristicPolicy
 from bots.random_bot import RandomPolicy
 
@@ -187,10 +186,72 @@ class RandomPolicyTests(unittest.TestCase):
         snapshot = state([1, 1], [player("P2", [3, 1])], nodes=[{
             "pos": [1, 1], "cooldown": 0, "active": True,
         }])
-        for _ in range(40):
+        # Independently enumerated from the rules: east/south moves and a
+        # south dash remain walkable; east dash lands on P2. P1 can attack in
+        # any direction, gather, or shield, but cannot heal at full HP.
+        expected_legal = {
+            ("wait", None),
+            ("move", "e"), ("move", "s"),
+            ("dash", "s"),
+            ("attack", "n"), ("attack", "e"),
+            ("attack", "s"), ("attack", "w"),
+            ("gather", None), ("shield", None),
+        }
+        for turn in range(40):
             action = first.decide(snapshot)
-            self.assertEqual(action, second.decide(snapshot))
-            self.assertIn(action, legal_actions(payload, snapshot, "P1"))
+            with self.subTest(turn=turn):
+                self.assertEqual(action, second.decide(snapshot))
+                self.assertIn((action.get("type"), action.get("dir")),
+                              expected_legal)
+
+    def test_multiple_seeds_never_move_or_dash_through_border(self):
+        snapshot = state([1, 1])
+        # Names are deterministic RandomPolicy RNG seeds. From [1, 1], only
+        # east and south stay inside the 15x15 arena's impassable border.
+        for name in ("Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"):
+            policy = RandomPolicy(name)
+            policy.on_start(start(name=name))
+            movement_types = set()
+            for turn in range(100):
+                action = policy.decide(snapshot)
+                with self.subTest(seed=name, turn=turn, action=action):
+                    if action.get("type") in {"move", "dash"}:
+                        movement_types.add(action["type"])
+                        self.assertIn(
+                            action.get("dir"), {"e", "s"},
+                            "north/west move or dash from [1,1] crosses "
+                            "the impassable border",
+                        )
+            self.assertEqual(movement_types, {"move", "dash"}, name)
+
+    def test_actions_match_independent_legal_set_with_obstacles_and_low_energy(self):
+        policy = RandomPolicy("Alpha")
+        policy.on_start(start(name="Alpha", walls=[[2, 1]]))
+        snapshot = state(
+            [1, 1], [player("P2", [1, 2])],
+            nodes=[{"pos": [1, 1], "cooldown": 3, "active": False}],
+        )
+        snapshot["players"][0]["energy"] = 12
+
+        # Independent oracle for this exact snapshot:
+        # - border blocks north/west, a wall blocks east, and P2 blocks south;
+        # - 12 energy permits attack (8) and shield (12), but not dash (18)
+        #   or heal (25);
+        # - the cooling node cannot be gathered.
+        expected_legal = {
+            ("wait", None),
+            ("attack", "n"), ("attack", "e"),
+            ("attack", "s"), ("attack", "w"),
+            ("shield", None),
+        }
+        observed = set()
+        for turn in range(100):
+            action = policy.decide(snapshot)
+            with self.subTest(turn=turn, action=action):
+                key = (action.get("type"), action.get("dir"))
+                observed.add(key)
+                self.assertIn(key, expected_legal)
+        self.assertEqual(observed, expected_legal)
 
     def test_does_not_gather_cooling_node_or_dash_without_energy(self):
         policy = RandomPolicy("Alpha")
