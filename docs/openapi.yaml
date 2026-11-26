@@ -1,0 +1,1194 @@
+openapi: 3.0.3
+info:
+  title: NEON ARENA HTTP API
+  version: 1.0.0
+  description: |
+    Server-authoritative JSON API for NEON ARENA human and custom clients.
+    The API supports five modes, strict shared turn deadlines, bearer-token
+    sessions, and mixed matches with TCP Agents. The server does not host the
+    Web client and returns JSON 404 for non-API paths.
+servers:
+  - url: http://127.0.0.1:8080/api/v1
+    description: Local default
+tags:
+  - name: Public
+    description: Health and authoritative rule discovery
+  - name: Sessions
+    description: Human session creation, recovery, and removal
+  - name: Match
+    description: State polling and turn actions
+security:
+  - BearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [Public]
+      summary: Get server health
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: Server health and counters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    options:
+      tags: [Public]
+      summary: CORS preflight
+      operationId: optionsHealth
+      security: []
+      responses:
+        '204':
+          description: Preflight accepted; no body
+  /rules:
+    get:
+      tags: [Public]
+      summary: Get rules and public server defaults
+      operationId: getRules
+      security: []
+      responses:
+        '200':
+          description: Rule numbers, protocol version, and defaults
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RulesResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    options:
+      tags: [Public]
+      summary: CORS preflight
+      operationId: optionsRules
+      security: []
+      responses:
+        '204':
+          description: Preflight accepted; no body
+  /sessions:
+    post:
+      tags: [Sessions]
+      summary: Create or recover a human session
+      description: |
+        Without a valid bearer token, supply name to create and queue a human.
+        With a valid token, an empty body recovers the current lobby/match view
+        or re-queues an ended participant. An absent Content-Length is treated
+        as a zero-length body. An invalid token with a name creates a new
+        session; an invalid token without a name returns 401.
+      operationId: createOrRecoverSession
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionRequest'
+      responses:
+        '200':
+          description: Session created or recovered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '408':
+          $ref: '#/components/responses/RequestTimeout'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '431':
+          $ref: '#/components/responses/HeadersTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      tags: [Sessions]
+      summary: Leave and invalidate a human session
+      description: |
+        Removes a lobby participant, immediately forfeits an active match
+        participant, or drops an ended result. The bearer token is invalidated.
+      operationId: deleteSession
+      responses:
+        '200':
+          description: Session removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteSessionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '408':
+          $ref: '#/components/responses/RequestTimeout'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '431':
+          $ref: '#/components/responses/HeadersTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    options:
+      tags: [Sessions]
+      summary: CORS preflight
+      operationId: optionsSessions
+      security: []
+      responses:
+        '204':
+          description: Preflight accepted; no body
+  /state:
+    get:
+      tags: [Match]
+      summary: Poll the current session view
+      description: |
+        Returns a lobby, active match, or frozen ended view. Polling also
+        refreshes session activity. Use 800 ms in lobby, 350 ms in a match,
+        1500 ms when ended or hidden, and back off on network errors.
+      operationId: getState
+      responses:
+        '200':
+          description: Current view for the bearer session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '408':
+          $ref: '#/components/responses/RequestTimeout'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '431':
+          $ref: '#/components/responses/HeadersTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    options:
+      tags: [Match]
+      summary: CORS preflight
+      operationId: optionsState
+      security: []
+      responses:
+        '204':
+          description: Preflight accepted; no body
+  /actions:
+    post:
+      tags: [Match]
+      summary: Submit an action for the open turn
+      description: |
+        The turn and action are validated by the authoritative server. A legal
+        resubmission replaces the pending action while the turn is open. At or
+        after reply_by_ms the server returns 409 turn_closed; late actions never
+        affect a resolved turn retroactively.
+      operationId: submitAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActionRequest'
+      responses:
+        '200':
+          description: Action accepted into the pending turn
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '408':
+          $ref: '#/components/responses/RequestTimeout'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '431':
+          $ref: '#/components/responses/HeadersTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    options:
+      tags: [Match]
+      summary: CORS preflight
+      operationId: optionsActions
+      security: []
+      responses:
+        '204':
+          description: Preflight accepted; no body
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token
+      description: Session token returned by POST /sessions; send as Authorization Bearer <token>.
+  responses:
+    BadRequest:
+      description: Malformed request, invalid name/action, insufficient resources, or invalid position
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing, invalid, or expired bearer token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Unknown API path
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    MethodNotAllowed:
+      description: Method is not supported for this path
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RequestTimeout:
+      description: Request read timeout
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Stale/closed turn, participant not in match, or participant not alive
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PayloadTooLarge:
+      description: Request body exceeds 32 KiB
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyRequests:
+      description: Session request rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    HeadersTooLarge:
+      description: Request headers exceed 16 KiB
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Unexpected server error; details are not returned to the client
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServiceUnavailable:
+      description: Combined TCP/HTTP client capacity or lobby capacity reached
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [server, version, protocol, uptime_s, lobby_players, match_running, active_players, spectators]
+      properties:
+        server:
+          type: string
+          enum: [Neon Arena]
+        version:
+          type: string
+          example: 1.0.0
+        protocol:
+          type: integer
+          enum: [1]
+        uptime_s:
+          type: integer
+          format: int64
+          minimum: 0
+        lobby_players:
+          type: integer
+          minimum: 0
+        match_running:
+          type: boolean
+        active_players:
+          type: integer
+          minimum: 0
+        spectators:
+          type: integer
+          minimum: 0
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, server, version, protocol, uptime_s, lobby_players, match_running, active_players, spectators]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        server:
+          type: string
+          enum: [Neon Arena]
+        version:
+          type: string
+        protocol:
+          type: integer
+          enum: [1]
+        uptime_s:
+          type: integer
+          format: int64
+        lobby_players:
+          type: integer
+        match_running:
+          type: boolean
+        active_players:
+          type: integer
+        spectators:
+          type: integer
+    Mode:
+      type: string
+      enum: [classic, king, team, survival, bounty]
+    ModeSelection:
+      type: string
+      enum: [rotation, classic, king, team, survival, bounty]
+    EndReason:
+      type: string
+      enum: [last_standing, mutual_destruction, score_limit, turn_limit, aborted]
+    Direction:
+      type: string
+      enum: [n, e, s, w]
+    Coordinate:
+      type: array
+      description: '[x,y], origin top-left, x right, y down'
+      minItems: 2
+      maxItems: 2
+      items:
+        type: integer
+    Zone:
+      type: object
+      additionalProperties: false
+      required: [min, max]
+      properties:
+        min:
+          $ref: '#/components/schemas/Coordinate'
+        max:
+          $ref: '#/components/schemas/Coordinate'
+    Rules:
+      type: object
+      additionalProperties: false
+      required: [max_hp, max_energy, start_energy, energy_regen, attack, dash, heal, shield, gather, score, turn_limit]
+      properties:
+        max_hp:
+          type: integer
+          example: 100
+        max_energy:
+          type: integer
+          example: 100
+        start_energy:
+          type: integer
+          example: 40
+        energy_regen:
+          type: integer
+          example: 4
+        attack:
+          type: object
+          additionalProperties: false
+          required: [cost, damage]
+          properties:
+            cost:
+              type: integer
+              example: 8
+            damage:
+              type: integer
+              example: 22
+        dash:
+          type: object
+          additionalProperties: false
+          required: [cost, distance]
+          properties:
+            cost:
+              type: integer
+              example: 18
+            distance:
+              type: integer
+              example: 2
+        heal:
+          type: object
+          additionalProperties: false
+          required: [cost, amount]
+          properties:
+            cost:
+              type: integer
+              example: 25
+            amount:
+              type: integer
+              example: 25
+        shield:
+          type: object
+          additionalProperties: false
+          required: [cost, amount, max]
+          properties:
+            cost:
+              type: integer
+              example: 12
+            amount:
+              type: integer
+              example: 26
+            max:
+              type: integer
+              example: 40
+        gather:
+          type: object
+          additionalProperties: false
+          required: [energy, node_cooldown]
+          properties:
+            energy:
+              type: integer
+              example: 30
+            node_cooldown:
+              type: integer
+              example: 4
+        score:
+          type: object
+          additionalProperties: false
+          required: [damage, kill, gather]
+          properties:
+            damage:
+              type: integer
+              example: 1
+            kill:
+              type: integer
+              example: 25
+            gather:
+              type: integer
+              example: 10
+        turn_limit:
+          type: integer
+          example: 80
+    ServerConfig:
+      type: object
+      description: Public defaults subset returned by GET /rules.
+      additionalProperties: false
+      required: [tick_ms, min_turn_ms, turn_limit, min_players, max_players, mode]
+      properties:
+        tick_ms:
+          type: integer
+          description: Shared maximum decision window per turn in milliseconds.
+          example: 15000
+        min_turn_ms:
+          type: integer
+          description: Minimum delay after every living player submits.
+          example: 250
+        turn_limit:
+          type: integer
+          example: 80
+        min_players:
+          type: integer
+          minimum: 2
+          maximum: 4
+          example: 2
+        max_players:
+          type: integer
+          minimum: 2
+          maximum: 4
+          example: 4
+        mode:
+          $ref: '#/components/schemas/ModeSelection'
+    RulesResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, protocol, rules, defaults]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        protocol:
+          type: integer
+          enum: [1]
+        rules:
+          $ref: '#/components/schemas/Rules'
+        defaults:
+          $ref: '#/components/schemas/ServerConfig'
+    Arena:
+      type: object
+      additionalProperties: false
+      required: [width, height, walls, nodes, spawns]
+      properties:
+        width:
+          type: integer
+          example: 15
+        height:
+          type: integer
+          example: 15
+        walls:
+          type: array
+          items:
+            $ref: '#/components/schemas/Coordinate'
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Coordinate'
+        spawns:
+          type: array
+          items:
+            $ref: '#/components/schemas/Coordinate'
+    LobbyPlayer:
+      type: object
+      additionalProperties: false
+      required: [name, kind]
+      properties:
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [human, agent]
+    LobbyView:
+      type: object
+      additionalProperties: false
+      required: [players, min_players, max_players, starts_in_ms, mode, mode_label, mode_description]
+      properties:
+        players:
+          type: array
+          items:
+            $ref: '#/components/schemas/LobbyPlayer'
+        min_players:
+          type: integer
+          minimum: 2
+          maximum: 4
+          description: Effective minimum for the actual next mode.
+        max_players:
+          type: integer
+          minimum: 2
+          maximum: 4
+        starts_in_ms:
+          type: integer
+          format: int32
+          minimum: 0
+          nullable: true
+          description: Remaining countdown, or null when no countdown is active.
+        mode:
+          $ref: '#/components/schemas/Mode'
+        mode_label:
+          type: string
+          example: Classic
+        mode_description:
+          type: string
+          example: Last player standing or highest score.
+    PlayerStats:
+      type: object
+      additionalProperties: false
+      required: [damage_dealt, kills, gathered, forfeited]
+      properties:
+        damage_dealt:
+          type: integer
+          minimum: 0
+        kills:
+          type: integer
+          minimum: 0
+        gathered:
+          type: integer
+          minimum: 0
+        forfeited:
+          type: boolean
+    PlayerView:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind, pos, hp, shield, energy, score, alive, stats]
+      properties:
+        id:
+          type: string
+          pattern: '^P[1-4]$'
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [human, agent]
+        pos:
+          $ref: '#/components/schemas/Coordinate'
+        hp:
+          type: integer
+          minimum: 0
+        shield:
+          type: integer
+          minimum: 0
+        energy:
+          type: integer
+          minimum: 0
+        score:
+          type: integer
+          minimum: 0
+        alive:
+          type: boolean
+        stats:
+          $ref: '#/components/schemas/PlayerStats'
+        team:
+          type: string
+          description: Team mode only; T1 or T2.
+          enum: [T1, T2]
+        hill_streak:
+          type: integer
+          minimum: 0
+          description: King mode only.
+        in_storm:
+          type: boolean
+          description: Survival mode only.
+        bounty_target:
+          type: string
+          nullable: true
+          description: Bounty mode only; target player ID or null.
+        bounty_streak:
+          type: integer
+          minimum: 0
+          description: Bounty mode only.
+    NodeView:
+      type: object
+      additionalProperties: false
+      required: [pos, cooldown, active]
+      properties:
+        pos:
+          $ref: '#/components/schemas/Coordinate'
+        cooldown:
+          type: integer
+          minimum: 0
+        active:
+          type: boolean
+    TeamState:
+      type: object
+      additionalProperties: false
+      required: [id, name, members, score, alive]
+      properties:
+        id:
+          type: string
+          enum: [T1, T2]
+        name:
+          type: string
+          enum: [Team A, Team B]
+        members:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            type: string
+            pattern: '^P[1-4]$'
+        score:
+          type: integer
+          minimum: 0
+        alive:
+          type: integer
+          minimum: 0
+          maximum: 2
+    TeamStanding:
+      type: object
+      additionalProperties: false
+      required: [id, name, members, score, alive, hp, energy]
+      properties:
+        id:
+          type: string
+          enum: [T1, T2]
+        name:
+          type: string
+          enum: [Team A, Team B]
+        members:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            type: string
+            pattern: '^P[1-4]$'
+        score:
+          type: integer
+          minimum: 0
+        alive:
+          type: integer
+          minimum: 0
+          maximum: 2
+        hp:
+          type: integer
+          minimum: 0
+        energy:
+          type: integer
+          minimum: 0
+    ModeState:
+      type: object
+      description: |
+        Public mode-specific state. Classic is empty. King has zone/target_score/
+        streaks; team has teams; survival has zone/next_shrink_turn/storm_damage;
+        bounty has target_score/targets.
+      additionalProperties: true
+      properties:
+        zone:
+          $ref: '#/components/schemas/Zone'
+        target_score:
+          type: integer
+          minimum: 0
+        streaks:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
+        teams:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamState'
+        next_shrink_turn:
+          type: integer
+          nullable: true
+          minimum: 1
+        storm_damage:
+          type: integer
+          minimum: 0
+        targets:
+          type: object
+          additionalProperties:
+            type: string
+            nullable: true
+    Event:
+      type: object
+      description: |
+        One turn event. Events normally describe a completed turn, but an
+        immediate out-of-turn forfeit snapshot may carry a forfeit event with
+        the current open turn. Known types are move, dash, blocked, attack,
+        damage, heal, shield, gather, death, forfeit, hill_score,
+        friendly_blocked, storm_shrink, storm_damage, bounty_complete, and
+        bounty_retarget. Clients should tolerate future event types.
+      required: [type]
+      additionalProperties: true
+      properties:
+        type:
+          type: string
+        player:
+          type: string
+        target:
+          description: Player ID, attacked coordinate, or null for an attack miss.
+          oneOf:
+            - type: string
+            - $ref: '#/components/schemas/Coordinate'
+            - type: object
+              nullable: true
+              enum: [null]
+        from:
+          $ref: '#/components/schemas/Coordinate'
+        to:
+          $ref: '#/components/schemas/Coordinate'
+        dir:
+          $ref: '#/components/schemas/Direction'
+        action:
+          type: string
+        reason:
+          type: string
+        hp_damage:
+          type: integer
+          minimum: 0
+        shield_damage:
+          type: integer
+          minimum: 0
+        bounty:
+          type: boolean
+        amount:
+          type: integer
+        hp:
+          type: integer
+          minimum: 0
+        shield:
+          type: integer
+          minimum: 0
+        pos:
+          $ref: '#/components/schemas/Coordinate'
+        energy_gain:
+          type: integer
+        score_gain:
+          type: integer
+        killer:
+          type: string
+          nullable: true
+        points:
+          type: integer
+        streak:
+          type: integer
+          minimum: 0
+        score:
+          type: integer
+          minimum: 0
+        bonus:
+          type: integer
+        zone:
+          $ref: '#/components/schemas/Zone'
+        next_shrink_turn:
+          type: integer
+          nullable: true
+    MatchView:
+      type: object
+      additionalProperties: false
+      required: [match_id, seed, turn, turn_limit, tick_ms, reply_by_ms, rules, arena, players, nodes, events_turn, events, mode, mode_state, submitted, your_action]
+      properties:
+        match_id:
+          type: string
+        seed:
+          type: integer
+          format: int32
+        turn:
+          type: integer
+          minimum: 0
+          description: Current open turn, including in a frozen ended match. It may equal the completed-turn count after normal resolution, but remains the current turn when an out-of-turn forfeit ends the match; result.turns is the completed-turn count.
+        turn_limit:
+          type: integer
+          minimum: 1
+        tick_ms:
+          type: integer
+          minimum: 0
+        reply_by_ms:
+          type: integer
+          format: int64
+          description: Absolute shared Unix-millisecond deadline.
+        rules:
+          $ref: '#/components/schemas/Rules'
+        arena:
+          $ref: '#/components/schemas/Arena'
+        players:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlayerView'
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeView'
+        events_turn:
+          type: integer
+          minimum: 0
+          description: Normally the previous completed turn, or 0 on the first state; an immediate out-of-turn forfeit snapshot uses the current open turn.
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+        mode:
+          $ref: '#/components/schemas/Mode'
+        mode_state:
+          $ref: '#/components/schemas/ModeState'
+        submitted:
+          type: boolean
+        your_action:
+          $ref: '#/components/schemas/NullableAction'
+    PlayerWinner:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          pattern: '^P[1-4]$'
+        name:
+          type: string
+    TeamWinner:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind, members]
+      properties:
+        id:
+          type: string
+          enum: [T1, T2]
+        name:
+          type: string
+          enum: [Team A, Team B]
+        kind:
+          type: string
+          enum: [team]
+        members:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            type: string
+            pattern: '^P[1-4]$'
+    Winner:
+      description: Player winner or team winner; team winners require kind and members.
+      oneOf:
+        - $ref: '#/components/schemas/PlayerWinner'
+        - $ref: '#/components/schemas/TeamWinner'
+    NullableWinner:
+      oneOf:
+        - $ref: '#/components/schemas/Winner'
+        - type: object
+          nullable: true
+          enum: [null]
+    EndedView:
+      type: object
+      additionalProperties: false
+      required: [type, match_id, reason, turns, winner, standings, events_turn, events, mode, mode_state]
+      properties:
+        type:
+          type: string
+          enum: [end]
+        match_id:
+          type: string
+        reason:
+          $ref: '#/components/schemas/EndReason'
+        turns:
+          type: integer
+          minimum: 0
+          description: Number of completed turns; an out-of-turn forfeit does not increment this count.
+        winner:
+          $ref: '#/components/schemas/NullableWinner'
+        standings:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlayerView'
+        events_turn:
+          type: integer
+          minimum: 0
+          description: Normally the final completed turn; if an out-of-turn forfeit ends the match, the current open turn.
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+        mode:
+          $ref: '#/components/schemas/Mode'
+        mode_state:
+          $ref: '#/components/schemas/ModeState'
+        team_standings:
+          type: array
+          description: Team mode only.
+          items:
+            $ref: '#/components/schemas/TeamStanding'
+    You:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind]
+      properties:
+        id:
+          type: string
+          nullable: true
+          pattern: '^P[1-4]$'
+          description: Null in lobby; P1-P4 in match/ended views.
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [human]
+    ServerInfo:
+      type: object
+      additionalProperties: false
+      required: [version, protocol, now_ms]
+      properties:
+        version:
+          type: string
+        protocol:
+          type: integer
+          enum: [1]
+        now_ms:
+          type: integer
+          format: int64
+          description: Server Unix time in milliseconds for clock-offset estimation.
+    NullableLobbyView:
+      oneOf:
+        - $ref: '#/components/schemas/LobbyView'
+        - type: object
+          nullable: true
+          enum: [null]
+    NullableMatchView:
+      oneOf:
+        - $ref: '#/components/schemas/MatchView'
+        - type: object
+          nullable: true
+          enum: [null]
+    NullableEndedView:
+      oneOf:
+        - $ref: '#/components/schemas/EndedView'
+        - type: object
+          nullable: true
+          enum: [null]
+    View:
+      type: object
+      additionalProperties: false
+      required: [mode, you, server, lobby, match, result]
+      properties:
+        mode:
+          type: string
+          enum: [lobby, match, ended]
+        you:
+          $ref: '#/components/schemas/You'
+        server:
+          $ref: '#/components/schemas/ServerInfo'
+        lobby:
+          $ref: '#/components/schemas/NullableLobbyView'
+        match:
+          $ref: '#/components/schemas/NullableMatchView'
+        result:
+          $ref: '#/components/schemas/NullableEndedView'
+    SessionRequest:
+      type: object
+      description: Unknown fields are ignored by the server.
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 20
+          description: Required for a new session; omitted for token recovery.
+    SessionResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, token, view]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        token:
+          type: string
+          description: URL-safe bearer session token.
+          example: <token>
+        view:
+          $ref: '#/components/schemas/View'
+    DeleteSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+    StateResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, view]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        view:
+          $ref: '#/components/schemas/View'
+    MoveAction:
+      type: object
+      description: Unknown fields are ignored by the server.
+      additionalProperties: true
+      required: [type, dir]
+      properties:
+        type:
+          type: string
+          enum: [move]
+        dir:
+          $ref: '#/components/schemas/Direction'
+    DashAction:
+      type: object
+      description: Unknown fields are ignored by the server.
+      additionalProperties: true
+      required: [type, dir]
+      properties:
+        type:
+          type: string
+          enum: [dash]
+        dir:
+          $ref: '#/components/schemas/Direction'
+    AttackAction:
+      type: object
+      description: Unknown fields are ignored by the server.
+      additionalProperties: true
+      required: [type, dir]
+      properties:
+        type:
+          type: string
+          enum: [attack]
+        dir:
+          $ref: '#/components/schemas/Direction'
+    SimpleAction:
+      type: object
+      description: Unknown fields are ignored by the server.
+      additionalProperties: true
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [gather, shield, heal, wait]
+    Action:
+      oneOf:
+        - $ref: '#/components/schemas/MoveAction'
+        - $ref: '#/components/schemas/DashAction'
+        - $ref: '#/components/schemas/AttackAction'
+        - $ref: '#/components/schemas/SimpleAction'
+      discriminator:
+        propertyName: type
+        mapping:
+          move: '#/components/schemas/MoveAction'
+          dash: '#/components/schemas/DashAction'
+          attack: '#/components/schemas/AttackAction'
+          gather: '#/components/schemas/SimpleAction'
+          shield: '#/components/schemas/SimpleAction'
+          heal: '#/components/schemas/SimpleAction'
+          wait: '#/components/schemas/SimpleAction'
+    NullableAction:
+      oneOf:
+        - $ref: '#/components/schemas/Action'
+        - type: object
+          nullable: true
+          enum: [null]
+    ActionRequest:
+      type: object
+      description: Unknown fields are ignored by the server.
+      additionalProperties: true
+      required: [turn, action]
+      properties:
+        turn:
+          type: integer
+          minimum: 1
+        action:
+          $ref: '#/components/schemas/Action'
+    ActionResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, turn, action]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        turn:
+          type: integer
+          minimum: 1
+        action:
+          $ref: '#/components/schemas/Action'
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code.
+        message:
+          type: string
+    Error:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          enum: [false]
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+    ErrorResponse:
+      $ref: '#/components/schemas/Error'
